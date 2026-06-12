@@ -1,0 +1,27 @@
+{
+  "name": "brnstrm",
+  "version": "1.0.0",
+  "description": "A brainstorming workspace for more effective human-agent communication",
+  "keywords": [
+    "agent",
+    "communication",
+    "brainstorm",
+    "workspace",
+    "boards"
+  ],
+  "homepage": "https://github.com/iBrushC/brnstrm#readme",
+  "bugs": {
+    "url": "https://github.com/iBrushC/brnstrm/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/iBrushC/brnstrm.git"
+  },
+  "license": "MIT",
+  "author": "Andrew Combs",
+  "type": "commonjs",
+  "main": "index.js",
+  "scripts": {
+    "test": "node --test"
+  }
+}
