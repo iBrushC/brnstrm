@@ -4,6 +4,8 @@
 import { view, screenToWorld } from "./view.js";
 import { api } from "./api.js";
 import { createNodeLayer } from "./nodes.js";
+import { createSectionLayer } from "./sections.js";
+import { createConnectionLayer } from "./connections.js";
 import { createBoardBar } from "./boards.js";
 import { createHistory } from "./history.js";
 import { createRadialMenu } from "./radial.js";
@@ -38,7 +40,22 @@ const GRID_SIZE = 24;
 const MIN_SCALE = 0.2;
 const MAX_SCALE = 4;
 
+// Stacked layers inside the (transformed) viewport, back to front.
+const sectionLayerEl = document.getElementById("section-layer");
+const connectionSvg = document.getElementById("connection-layer");
+const connLabelsEl = document.getElementById("conn-labels");
+const nodeLayerEl = document.getElementById("node-layer");
+
 let nodeLayer; // set during init
+let sections; // set during init
+let connections; // set during init
+
+// Single change hook shared by node/section edits: keep the minimap fresh and
+// re-route arrows so they track the nodes they connect.
+function refresh() {
+  drawMinimap();
+  if (connections) connections.redraw();
+}
 
 function render() {
   viewport.style.transform =
@@ -68,14 +85,15 @@ function drawMinimap() {
   mmCtx.clearRect(0, 0, W, H);
 
   const rects = nodeLayer.getRects();
+  const sectionRects = sections ? sections.getRects() : [];
   const vis = visibleWorldRect();
 
-  // Fit the union of nodes + the visible region, with padding.
+  // Fit the union of nodes + sections + the visible region, with padding.
   let minX = vis.x,
     minY = vis.y,
     maxX = vis.x + vis.w,
     maxY = vis.y + vis.h;
-  for (const n of rects) {
+  for (const n of [...rects, ...sectionRects]) {
     minX = Math.min(minX, n.x);
     minY = Math.min(minY, n.y);
     maxX = Math.max(maxX, n.x + n.w);
@@ -90,6 +108,13 @@ function drawMinimap() {
   const mm = (x, y) => ({ x: x * s + offX, y: y * s + offY });
 
   const style = getComputedStyle(root);
+  // Sections (outlined, behind nodes)
+  mmCtx.strokeStyle = style.getPropertyValue("--border").trim() || "#2c2f38";
+  mmCtx.lineWidth = 1;
+  for (const sec of sectionRects) {
+    const p = mm(sec.x, sec.y);
+    mmCtx.strokeRect(p.x, p.y, Math.max(2, sec.w * s), Math.max(2, sec.h * s));
+  }
   // Nodes
   mmCtx.fillStyle = style.getPropertyValue("--accent").trim() || "#6ea8fe";
   for (const n of rects) {
@@ -106,7 +131,10 @@ function drawMinimap() {
 // Recenter: fit all nodes in view, or reset to origin if the board is empty.
 function recenter() {
   const r = canvas.getBoundingClientRect();
-  const rects = nodeLayer.getRects();
+  const rects = [
+    ...nodeLayer.getRects(),
+    ...(sections ? sections.getRects() : []),
+  ];
   if (rects.length === 0) {
     view.scale = 1;
     view.x = r.width / 2;
@@ -161,6 +189,10 @@ let startY = 0;
 
 canvas.addEventListener("mousedown", (e) => {
   if (e.button !== 0 || e.target.closest("#hud")) return;
+  // Clicking empty canvas while aiming an arrow cancels the pending connect.
+  if (connections && connections.isConnecting() && !e.target.closest(".node")) {
+    connections.cancelConnect();
+  }
   panning = true;
   startX = e.clientX - view.x;
   startY = e.clientY - view.y;
@@ -218,9 +250,10 @@ function scheduleCameraSave() {
 /* ---------------- Undo history ---------------- */
 const history = createHistory();
 
-/* ---------------- Radial add-node menu ---------------- */
-// One option for now (top quarter). Add more by giving each a free quarter
-// ('right' | 'bottom' | 'left') and an onPick that spawns its node type.
+/* ---------------- Radial add menu ---------------- */
+// Each quarter spawns a different kind of thing. "Note" spawns instantly at the
+// press point; "Section" and "Arrow" instead enter a follow-up interaction mode
+// (drag a rectangle / click two nodes), so their onPick ignores the point.
 const radial = createRadialMenu({
   container: canvas,
   options: [
@@ -229,6 +262,18 @@ const radial = createRadialMenu({
       label: "Note",
       position: "top",
       onPick: (p) => nodeLayer && nodeLayer.spawnAtWorld(p.x, p.y),
+    },
+    {
+      id: "section",
+      label: "Section",
+      position: "left",
+      onPick: () => sections && sections.beginDraw(),
+    },
+    {
+      id: "arrow",
+      label: "Arrow",
+      position: "right",
+      onPick: () => connections && connections.beginConnect(),
     },
   ],
 });
@@ -275,9 +320,15 @@ window.addEventListener("keydown", (e) => {
     return;
   }
 
-  // Delete the selected node.
+  // Delete the selected thing — try node, then section, then arrow.
   if ((e.key === "Delete" || e.key === "Backspace") && !isTyping() && nodeLayer) {
-    if (nodeLayer.deleteSelected()) e.preventDefault();
+    if (
+      nodeLayer.deleteSelected() ||
+      (sections && sections.deleteSelected()) ||
+      (connections && connections.deleteSelected())
+    ) {
+      e.preventDefault();
+    }
     return;
   }
 
@@ -288,6 +339,15 @@ window.addEventListener("keydown", (e) => {
   if (e.key === "Escape") {
     if (radial.isOpen()) {
       radial.cancel();
+      return;
+    }
+    // Bail out of an in-progress section draw or arrow connect.
+    if (sections && sections.isDrawing()) {
+      sections.cancelDraw();
+      return;
+    }
+    if (connections && connections.isConnecting()) {
+      connections.cancelConnect();
       return;
     }
     if (helpGuide.classList.contains("visible")) {
@@ -312,8 +372,30 @@ window.addEventListener("keyup", (e) => {
 })();
 
 nodeLayer = createNodeLayer({
-  viewport,
+  viewport: nodeLayerEl,
   getBoardId: () => boards.current(),
+  onChange: refresh,
+  history,
+  // In connect mode, a node press starts dragging an arrow instead of moving.
+  isLocked: () => connections && connections.isConnecting(),
+  onNodeClick: (node) => connections && connections.startDragFrom(node),
+  onDelete: (nodeId) => connections && connections.removeForNode(nodeId),
+});
+
+sections = createSectionLayer({
+  layer: sectionLayerEl,
+  canvas,
+  getBoardId: () => boards.current(),
+  onChange: refresh,
+  history,
+});
+
+connections = createConnectionLayer({
+  svg: connectionSvg,
+  labelLayer: connLabelsEl,
+  canvas,
+  getBoardId: () => boards.current(),
+  getNodeRect: (id) => nodeLayer.getNodeRect(id),
   onChange: drawMinimap,
   history,
 });
@@ -325,6 +407,8 @@ const boards = createBoardBar({
     try {
       const data = await api.getBoard(id);
       nodeLayer.load(data.nodes);
+      sections.load(data.sections);
+      connections.load(data.connections);
       if (data.camera && typeof data.camera.x === "number") {
         view.x = data.camera.x;
         view.y = data.camera.y;

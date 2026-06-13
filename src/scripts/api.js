@@ -22,6 +22,22 @@ export const api = {
   createNode: (id, node) => req("POST", board(id) + "/nodes", node),
   updateNode: (id, nodeId, patch) =>
     req("PATCH", board(id) + "/nodes/" + encodeURIComponent(nodeId), patch),
+  // Renaming a node re-slugs its .md file server-side; the node id is unchanged.
+  renameNode: (id, nodeId, name) =>
+    req("PATCH", board(id) + "/nodes/" + encodeURIComponent(nodeId), { name }),
   deleteNode: (id, nodeId) =>
     req("DELETE", board(id) + "/nodes/" + encodeURIComponent(nodeId)),
+
+  createSection: (id, section) => req("POST", board(id) + "/sections", section),
+  updateSection: (id, sectionId, patch) =>
+    req("PATCH", board(id) + "/sections/" + encodeURIComponent(sectionId), patch),
+  deleteSection: (id, sectionId) =>
+    req("DELETE", board(id) + "/sections/" + encodeURIComponent(sectionId)),
+
+  listConnections: (id) => req("GET", board(id) + "/connections"),
+  createConnection: (id, conn) => req("POST", board(id) + "/connections", conn),
+  updateConnection: (id, connId, patch) =>
+    req("PATCH", board(id) + "/connections/" + encodeURIComponent(connId), patch),
+  deleteConnection: (id, connId) =>
+    req("DELETE", board(id) + "/connections/" + encodeURIComponent(connId)),
 };

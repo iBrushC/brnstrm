@@ -10,9 +10,25 @@ const DEFAULT_H = 140;
 const MIN_W = 140;
 const MIN_H = 80;
 
-export function createNodeLayer({ viewport, getBoardId, onChange, history }) {
+// Hooks beyond the basics:
+//   onNodeClick(node) — fired when a node is pressed (lets arrows pick endpoints)
+//   onDelete(nodeId)  — fired after a node is removed (lets arrows clean up)
+//   isLocked()        — when true, drag/resize are suppressed (e.g. while the
+//                       user is in "connect two nodes" mode and clicks should
+//                       only pick, not move)
+export function createNodeLayer({
+  viewport,
+  getBoardId,
+  onChange,
+  history,
+  onNodeClick,
+  onDelete,
+  isLocked,
+}) {
   let nodes = []; // { id, x, y, w, h, content, el, textarea }
   let selected = null;
+
+  const locked = () => (typeof isLocked === "function" ? isLocked() : false);
 
   function select(node) {
     if (selected) selected.el.classList.remove("selected");
@@ -42,6 +58,7 @@ export function createNodeLayer({ viewport, getBoardId, onChange, history }) {
   function addNodeEl(data) {
     const el = document.createElement("div");
     el.className = "node";
+    el.dataset.id = data.id;
     el.style.left = data.x + "px";
     el.style.top = data.y + "px";
     el.style.width = (data.w || DEFAULT_W) + "px";
@@ -49,7 +66,8 @@ export function createNodeLayer({ viewport, getBoardId, onChange, history }) {
 
     const bar = document.createElement("div");
     bar.className = "node-bar";
-    bar.textContent = data.id;
+    bar.textContent = data.name || data.id;
+    bar.title = "drag to move · right-click to rename";
 
     const ta = document.createElement("textarea");
     ta.className = "node-text";
@@ -61,17 +79,24 @@ export function createNodeLayer({ viewport, getBoardId, onChange, history }) {
     handle.className = "node-resize";
     handle.title = "Drag to resize";
 
-    el.append(bar, ta, handle);
+    const deleteBtn = document.createElement("button");
+    deleteBtn.className = "node-delete";
+    deleteBtn.textContent = "×";
+    deleteBtn.title = "Delete node";
+
+    el.append(bar, ta, handle, deleteBtn);
     viewport.appendChild(el);
 
     const node = {
       id: data.id,
+      name: data.name || "",
       x: data.x,
       y: data.y,
       w: data.w || DEFAULT_W,
       h: data.h || DEFAULT_H,
       content: data.content || "",
       el,
+      bar,
       textarea: ta,
     };
     nodes.push(node);
@@ -79,10 +104,26 @@ export function createNodeLayer({ viewport, getBoardId, onChange, history }) {
     // Keep canvas pan/zoom from triggering when interacting with a node.
     el.addEventListener("mousedown", (e) => {
       e.stopPropagation();
+      // While locked (connect mode), the press only starts an arrow — don't
+      // select or focus the textarea underneath.
+      if (locked()) {
+        e.preventDefault();
+        if (onNodeClick) onNodeClick(node);
+        return;
+      }
       select(node);
+      if (onNodeClick) onNodeClick(node);
     });
     bar.addEventListener("mousedown", (e) => startDrag(e, node));
+    // Rename on right-click, consistent with renaming a board.
+    bar.addEventListener("contextmenu", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      beginRename(node);
+    });
     handle.addEventListener("mousedown", (e) => startResize(e, node));
+    deleteBtn.addEventListener("mousedown", (e) => e.stopPropagation());
+    deleteBtn.addEventListener("click", (e) => { e.stopPropagation(); deleteNode(node); });
 
     // Persist content edits (debounced).
     let timer;
@@ -95,10 +136,56 @@ export function createNodeLayer({ viewport, getBoardId, onChange, history }) {
     return node;
   }
 
+  /* ---- renaming (title bar) ---- */
+  // Swap the title bar for an inline input. The node id is shown as a
+  // placeholder so an emptied name reverts the file to its id on disk.
+  function beginRename(node) {
+    const input = document.createElement("input");
+    input.className = "node-name-input";
+    input.value = node.name || "";
+    input.placeholder = node.id;
+    node.bar.replaceWith(input);
+    input.focus();
+    input.select();
+
+    let done = false;
+    const commit = () => {
+      if (done) return;
+      done = true;
+      const name = input.value.trim();
+      node.name = name;
+      node.bar.textContent = name || node.id;
+      input.replaceWith(node.bar);
+      rename(node, name);
+    };
+    input.addEventListener("blur", commit);
+    input.addEventListener("keydown", (e) => {
+      e.stopPropagation();
+      if (e.key === "Enter") input.blur();
+      else if (e.key === "Escape") {
+        input.value = node.name || "";
+        input.blur();
+      }
+    });
+    input.addEventListener("mousedown", (e) => e.stopPropagation());
+  }
+
+  async function rename(node, name) {
+    const id = getBoardId();
+    if (!id) return;
+    try {
+      await api.renameNode(id, node.id, name);
+    } catch (err) {
+      console.error(err);
+    }
+  }
+
   /* ---- dragging ---- */
   let drag = null;
 
   function startDrag(e, node) {
+    if (e.button !== 0) return; // ignore right-click (rename) and middle-click
+    if (locked()) return; // e.g. picking endpoints in connect mode
     e.preventDefault();
     drag = { node, sx: e.clientX, sy: e.clientY, ox: node.x, oy: node.y };
     window.addEventListener("mousemove", onDrag);
@@ -128,6 +215,7 @@ export function createNodeLayer({ viewport, getBoardId, onChange, history }) {
   let resize = null;
 
   function startResize(e, node) {
+    if (locked()) return;
     e.preventDefault();
     e.stopPropagation(); // don't also start a drag/select on the node body
     select(node);
@@ -190,6 +278,7 @@ export function createNodeLayer({ viewport, getBoardId, onChange, history }) {
     const i = nodes.indexOf(node);
     if (i !== -1) nodes.splice(i, 1);
     if (selected === node) selected = null;
+    if (onDelete) onDelete(node.id);
   }
 
   function deleteNode(node) {
@@ -197,6 +286,7 @@ export function createNodeLayer({ viewport, getBoardId, onChange, history }) {
     // Snapshot enough to fully recreate the node on undo (same id + content).
     const snapshot = {
       id: node.id,
+      name: node.name,
       x: node.x,
       y: node.y,
       w: node.w,
@@ -237,5 +327,11 @@ export function createNodeLayer({ viewport, getBoardId, onChange, history }) {
     return nodes.map((n) => ({ x: n.x, y: n.y, w: n.w, h: n.h }));
   }
 
-  return { load, clear, spawnAtWorld, deleteSelected, getRects };
+  // Live geometry of a single node by id (used by arrows to find endpoints).
+  function getNodeRect(id) {
+    const n = nodes.find((n) => n.id === id);
+    return n ? { x: n.x, y: n.y, w: n.w, h: n.h } : null;
+  }
+
+  return { load, clear, spawnAtWorld, deleteSelected, getRects, getNodeRect };
 }

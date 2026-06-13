@@ -183,6 +183,31 @@ body {
   cursor: grabbing;
 }
 
+/* Drawing a section: crosshair over the whole canvas. */
+#canvas.drawing-section,
+#canvas.drawing-section * {
+  cursor: crosshair;
+}
+
+/* Connecting an arrow: crosshair everywhere; highlight the chosen source node. */
+body.connecting,
+body.connecting #canvas {
+  cursor: crosshair;
+}
+
+/* The node a connection is being dragged from. */
+.node.conn-source {
+  outline: 2px dashed var(--accent);
+  outline-offset: 3px;
+}
+
+/* The node currently under the cursor — the prospective drop target. */
+.node.conn-target {
+  outline: 3px solid var(--accent);
+  outline-offset: 3px;
+  box-shadow: 0 0 0 6px var(--radial-hi);
+}
+
 /* Infinite dotted grid. Position & size are driven by JS via CSS vars. */
 #grid {
   position: absolute;
@@ -198,6 +223,200 @@ body {
   left: 0;
   transform-origin: 0 0;
   will-change: transform;
+}
+
+/* Stacked layers inside the viewport (all share the world origin). Painted
+   back-to-front by DOM order: sections, arrows, arrow labels, then nodes. */
+#section-layer,
+#connection-layer,
+#conn-labels,
+#node-layer {
+  position: absolute;
+  top: 0;
+  left: 0;
+}
+
+/* ---- Sections ---- */
+/* The body is click-through so panning still works over the (large) area; only
+   the bar and resize grip are interactive. Sit behind everything else. */
+.section {
+  position: absolute;
+  pointer-events: none;
+  background: color-mix(in srgb, var(--accent) 9%, transparent);
+  border: 1px solid color-mix(in srgb, var(--accent) 45%, var(--border));
+  border-radius: 8px;
+}
+
+.section.selected {
+  outline: 2px solid var(--selection);
+  outline-offset: 2px;
+}
+
+.section-preview {
+  border-style: dashed;
+}
+
+.section-bar {
+  position: absolute;
+  top: 0;
+  left: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+  padding: 3px 6px 3px 9px;
+  pointer-events: auto;
+  font-size: 11px;
+  color: var(--text-dim);
+  background: color-mix(in srgb, var(--accent) 16%, var(--panel));
+  border-radius: 8px 0 6px 0;
+  cursor: grab;
+  user-select: none;
+}
+
+.section-bar:active {
+  cursor: grabbing;
+}
+
+.section-label {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.section-label-input {
+  font-family: inherit;
+  font-size: 11px;
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--accent);
+  border-radius: 3px;
+  padding: 0 4px;
+  min-width: 80px;
+}
+
+.section-label-input:focus {
+  outline: none;
+}
+
+.section-delete {
+  font-family: inherit;
+  font-size: 13px;
+  line-height: 1;
+  color: var(--text-dim);
+  background: transparent;
+  border: none;
+  border-radius: 3px;
+  cursor: pointer;
+  opacity: 0.6;
+}
+
+.section-delete:hover {
+  opacity: 1;
+  color: var(--accent);
+}
+
+.section-resize {
+  position: absolute;
+  right: 2px;
+  bottom: 2px;
+  width: 11px;
+  height: 11px;
+  border-radius: 50%;
+  background: var(--text-dim);
+  pointer-events: auto;
+  opacity: 0;
+  cursor: nwse-resize;
+  transition: opacity 0.12s ease, background 0.12s ease;
+}
+
+.section:hover .section-resize,
+.section.selected .section-resize {
+  opacity: 0.5;
+}
+
+.section-resize:hover {
+  opacity: 1;
+  background: var(--accent);
+}
+
+/* ---- Connections (arrows) ---- */
+#connection-layer {
+  width: 1px;
+  height: 1px;
+  overflow: visible; /* lines drawn well outside the 1px box must still show */
+  pointer-events: none;
+}
+
+#connection-layer marker path {
+  fill: var(--accent);
+}
+
+.conn-line {
+  stroke: var(--accent);
+  stroke-width: 2;
+  pointer-events: stroke;
+  cursor: pointer;
+}
+
+.conn-line.selected {
+  stroke: var(--selection);
+  stroke-width: 3;
+}
+
+/* Ghost arrow shown while dragging out a new connection. */
+.conn-ghost {
+  stroke: var(--accent);
+  stroke-width: 2;
+  stroke-dasharray: 6 5;
+  opacity: 0.8;
+  pointer-events: none;
+}
+
+#conn-labels {
+  pointer-events: none;
+}
+
+.conn-label {
+  position: absolute;
+  transform: translate(-50%, -50%);
+  padding: 2px 7px;
+  pointer-events: auto;
+  font-size: 11px;
+  color: var(--text);
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  white-space: nowrap;
+  cursor: pointer;
+  user-select: none;
+}
+
+.conn-label.empty {
+  color: var(--text-dim);
+  font-style: italic;
+}
+
+.conn-label.selected {
+  border-color: var(--selection);
+  color: var(--text);
+}
+
+.conn-label-input {
+  position: absolute;
+  transform: translate(-50%, -50%);
+  font-family: inherit;
+  font-size: 11px;
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--accent);
+  border-radius: 3px;
+  padding: 1px 5px;
+  min-width: 80px;
+}
+
+.conn-label-input:focus {
+  outline: none;
 }
 
 /* ---- Nodes ---- */
@@ -237,6 +456,22 @@ body {
   cursor: grabbing;
 }
 
+.node-name-input {
+  flex: 0 0 auto;
+  height: 22px;
+  font-family: inherit;
+  font-size: 11px;
+  color: var(--text);
+  background: var(--bg);
+  border: none;
+  border-bottom: 1px solid var(--accent);
+  padding: 0 8px;
+}
+
+.node-name-input:focus {
+  outline: none;
+}
+
 .node-text {
   flex: 1;
   resize: none;
@@ -271,6 +506,39 @@ body {
 .node-resize:hover {
   opacity: 1;
   background: var(--accent);
+}
+
+.node-delete {
+  position: absolute;
+  top: 2px;
+  right: 4px;
+  width: 18px;
+  height: 18px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: inherit;
+  font-size: 15px;
+  line-height: 1;
+  color: var(--text-dim);
+  background: transparent;
+  border: none;
+  border-radius: 3px;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.12s ease, color 0.12s ease;
+  z-index: 1;
+}
+
+.node:hover .node-delete,
+.node.selected .node-delete {
+  opacity: 0.5;
+}
+
+.node:hover .node-delete:hover,
+.node.selected .node-delete:hover {
+  opacity: 1;
+  color: var(--accent);
 }
 
 /* ---- HUD (minimap + controls) ---- */

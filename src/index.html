@@ -31,7 +31,24 @@
       <main id="canvas">
         <div id="grid"></div>
         <div id="viewport">
-          <!-- nodes are rendered here -->
+          <!-- back-to-front: sections, arrows, arrow labels, then nodes -->
+          <div id="section-layer"></div>
+          <svg id="connection-layer" xmlns="http://www.w3.org/2000/svg">
+            <defs>
+              <marker
+                id="arrowhead"
+                markerWidth="10"
+                markerHeight="8"
+                refX="9"
+                refY="4"
+                orient="auto"
+              >
+                <path d="M0,0 L10,4 L0,8 Z" />
+              </marker>
+            </defs>
+          </svg>
+          <div id="conn-labels"></div>
+          <div id="node-layer"></div>
         </div>
 
         <div id="hud">
@@ -42,7 +59,7 @@
           </div>
         </div>
 
-        <div id="hint">hold <kbd>a</kbd> &amp; aim to add a node · drag title to move</div>
+        <div id="hint">hold <kbd>a</kbd> &amp; aim: ↑ node · ← section · → arrow</div>
 
         <button id="help-btn" type="button" title="Show controls">?</button>
 
@@ -58,14 +75,27 @@
             <div class="help-row"><span class="help-key">recenter</span><span>fit all nodes in view</span></div>
           </div>
           <div class="help-section">
+            <div class="help-section-title">radial menu</div>
+            <div class="help-row"><kbd>a</kbd><span>hold &amp; aim, release to pick</span></div>
+            <div class="help-row"><span class="help-key">↑ aim up</span><span>add a node</span></div>
+            <div class="help-row"><span class="help-key">← aim left</span><span>draw a section</span></div>
+            <div class="help-row"><span class="help-key">→ aim right</span><span>connect with an arrow</span></div>
+          </div>
+          <div class="help-section">
             <div class="help-section-title">nodes</div>
-            <div class="help-row"><kbd>a</kbd><span>hold &amp; aim, release to add</span></div>
             <div class="help-row"><span class="help-key">click</span><span>select node</span></div>
             <div class="help-row"><span class="help-key">drag title bar</span><span>move node</span></div>
             <div class="help-row"><span class="help-key">drag corner</span><span>resize node</span></div>
-            <div class="help-row"><kbd>Del</kbd><span>delete selected node</span></div>
+            <div class="help-row"><kbd>Del</kbd><span>delete selected</span></div>
             <div class="help-row"><span class="help-key">Ctrl+Z</span><span>undo (e.g. delete)</span></div>
             <div class="help-row"><span class="help-key">type</span><span>edit content (auto-saved)</span></div>
+          </div>
+          <div class="help-section">
+            <div class="help-section-title">sections &amp; arrows</div>
+            <div class="help-row"><span class="help-key">drag</span><span>section: top-left → bottom-right</span></div>
+            <div class="help-row"><span class="help-key">drag node→node</span><span>arrow: from source to target</span></div>
+            <div class="help-row"><span class="help-key">right-click</span><span>rename a label</span></div>
+            <div class="help-row"><span class="help-key">×</span><span>delete section</span></div>
           </div>
           <div class="help-section">
             <div class="help-section-title">boards</div>
