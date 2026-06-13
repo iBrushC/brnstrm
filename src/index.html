@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>brnstrm</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <div id="app">
+      <aside id="sidebar">
+        <header id="sidebar-head">
+          <h1>🧠 brnstrm</h1>
+        </header>
+
+        <nav id="sidebar-nav">
+          <div class="nav-head">
+            <span>boards</span>
+            <button id="add-board" type="button" title="New board">+</button>
+          </div>
+          <ul id="board-list"></ul>
+        </nav>
+
+        <footer id="sidebar-foot">
+          <button id="theme-toggle" type="button" title="Toggle theme">
+            <span class="theme-label">theme: dark</span>
+          </button>
+        </footer>
+      </aside>
+
+      <main id="canvas">
+        <div id="grid"></div>
+        <div id="viewport">
+          <!-- nodes are rendered here -->
+        </div>
+
+        <div id="hud">
+          <canvas id="minimap" width="180" height="120"></canvas>
+          <div id="hud-bar">
+            <button id="recenter" type="button" title="Recenter view">recenter</button>
+            <span id="zoom-level">100%</span>
+          </div>
+        </div>
+
+        <div id="hint">hold <kbd>a</kbd> &amp; aim to add a node · drag title to move</div>
+
+        <button id="help-btn" type="button" title="Show controls">?</button>
+
+        <div id="help-guide">
+          <div class="help-header">
+            <span>controls</span>
+            <button id="help-close" type="button" title="Close">×</button>
+          </div>
+          <div class="help-section">
+            <div class="help-section-title">canvas</div>
+            <div class="help-row"><span class="help-key">scroll</span><span>zoom in / out</span></div>
+            <div class="help-row"><span class="help-key">drag</span><span>pan view</span></div>
+            <div class="help-row"><span class="help-key">recenter</span><span>fit all nodes in view</span></div>
+          </div>
+          <div class="help-section">
+            <div class="help-section-title">nodes</div>
+            <div class="help-row"><kbd>a</kbd><span>hold &amp; aim, release to add</span></div>
+            <div class="help-row"><span class="help-key">click</span><span>select node</span></div>
+            <div class="help-row"><span class="help-key">drag title bar</span><span>move node</span></div>
+            <div class="help-row"><span class="help-key">drag corner</span><span>resize node</span></div>
+            <div class="help-row"><kbd>Del</kbd><span>delete selected node</span></div>
+            <div class="help-row"><span class="help-key">Ctrl+Z</span><span>undo (e.g. delete)</span></div>
+            <div class="help-row"><span class="help-key">type</span><span>edit content (auto-saved)</span></div>
+          </div>
+          <div class="help-section">
+            <div class="help-section-title">boards</div>
+            <div class="help-row"><span class="help-key">click</span><span>switch board</span></div>
+            <div class="help-row"><span class="help-key">right-click</span><span>rename board</span></div>
+            <div class="help-row"><span class="help-key">+</span><span>create new board</span></div>
+          </div>
+        </div>
+      </main>
+    </div>
+
+    <script type="module" src="scripts/app.js"></script>
+  </body>
+</html>

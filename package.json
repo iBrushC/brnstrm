@@ -20,8 +20,9 @@
   "license": "MIT",
   "author": "Andrew Combs",
   "type": "commonjs",
-  "main": "index.js",
+  "main": "server.js",
   "scripts": {
+    "start": "node server.js",
     "test": "node --test"
   }
 }
