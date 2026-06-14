@@ -11,6 +11,7 @@ import { view, screenToWorld } from "./view.js";
 import { api } from "./api.js";
 import { inlineEdit } from "./inline-edit.js";
 import { createSelection } from "./selection.js";
+import { createDragSet } from "./drag-set.js";
 
 const MIN_SIZE = 24; // world px — drags smaller than this are treated as a miss
 const DEFAULT_LABEL = "section";
@@ -19,18 +20,25 @@ export function createSectionLayer({ layer, canvas, getBoardId, onChange, histor
   let sections = []; // { id, x, y, w, h, label, el, labelEl }
   let drawing = false;
   let drawState = null;
-  let containedSectionOrigins = []; // child sections captured during a single-section drag
 
   const notify = () => onChange && onChange();
+
+  const place = (s) => applyRect(s.el, s);
+  const persistMove = (s, patch) => persist(s, patch);
 
   // Single + marquee-group selection (shared with the node layer).
   const sel = createSelection({
     getItems: () => sections,
-    place: (s) => applyRect(s.el, s),
-    persist: (s, patch) => persist(s, patch),
+    place,
+    persist: persistMove,
     onChange,
   });
   const select = sel.select;
+
+  // Moves the actively-dragged section(s); and, separately, the child sections
+  // nested fully inside a section while that section is dragged.
+  const activeDrag = createDragSet({ place, persist: persistMove });
+  const containedDrag = createDragSet({ place, persist: persistMove });
 
   document.addEventListener("mousedown", (e) => {
     if (!e.shiftKey && !e.target.closest(".section")) select(null);
@@ -157,22 +165,17 @@ export function createSectionLayer({ layer, canvas, getBoardId, onChange, histor
     const group = sel.getGroup();
     const inGroup = sel.isInGroup(section);
     select(section);
-    if (group.length > 1 && inGroup) {
-      drag = {
-        group: group.map((s) => ({ section: s, ox: s.x, oy: s.y })),
-        sx: e.clientX,
-        sy: e.clientY,
-        crossLayer: true,
-      };
-    } else {
-      drag = { section, sx: e.clientX, sy: e.clientY, ox: section.x, oy: section.y, crossLayer: inGroup, sectionDrag: !inGroup };
-    }
+    activeDrag.capture(group.length > 1 && inGroup ? group : [section]);
+    // A lone section (not part of a marquee group) drags its nested children and
+    // contained nodes along; a grouped drag is handled cross-layer instead.
+    const sectionDrag = !inGroup;
+    drag = { sx: e.clientX, sy: e.clientY, crossLayer: inGroup, sectionDrag };
     if (inGroup && onGroupDragStart) onGroupDragStart();
-    if (!inGroup && onSectionDragStart) onSectionDragStart(section);
-    if (!inGroup) {
-      containedSectionOrigins = sections
-        .filter((s) => s !== section && sectionFullyInside(section, s))
-        .map((s) => ({ section: s, ox: s.x, oy: s.y }));
+    if (sectionDrag && onSectionDragStart) onSectionDragStart(section);
+    if (sectionDrag) {
+      containedDrag.capture(
+        sections.filter((s) => s !== section && sectionFullyInside(section, s))
+      );
     }
     window.addEventListener("mousemove", onDrag);
     window.addEventListener("mouseup", endDrag);
@@ -181,48 +184,18 @@ export function createSectionLayer({ layer, canvas, getBoardId, onChange, histor
     if (!drag) return;
     const dx = (e.clientX - drag.sx) / view.scale;
     const dy = (e.clientY - drag.sy) / view.scale;
-    if (drag.group) {
-      drag.group.forEach((g) => {
-        g.section.x = g.ox + dx;
-        g.section.y = g.oy + dy;
-        applyRect(g.section.el, g.section);
-      });
-    } else {
-      drag.section.x = drag.ox + dx;
-      drag.section.y = drag.oy + dy;
-      applyRect(drag.section.el, drag.section);
-    }
+    activeDrag.apply(dx, dy);
     if (drag.crossLayer && onGroupDragMove) onGroupDragMove(dx, dy);
     if (drag.sectionDrag && onSectionDragMove) onSectionDragMove(dx, dy);
-    if (drag.sectionDrag) {
-      containedSectionOrigins.forEach((g) => {
-        g.section.x = g.ox + dx;
-        g.section.y = g.oy + dy;
-        applyRect(g.section.el, g.section);
-      });
-    }
+    if (drag.sectionDrag) containedDrag.apply(dx, dy);
     notify();
   }
   function endDrag() {
     if (drag) {
-      if (drag.group) {
-        drag.group.forEach((g) =>
-          persist(g.section, { x: Math.round(g.section.x), y: Math.round(g.section.y) })
-        );
-      } else {
-        persist(drag.section, {
-          x: Math.round(drag.section.x),
-          y: Math.round(drag.section.y),
-        });
-      }
+      activeDrag.commit();
       if (drag.crossLayer && onGroupDragEnd) onGroupDragEnd();
       if (drag.sectionDrag && onSectionDragEnd) onSectionDragEnd();
-      if (drag.sectionDrag) {
-        containedSectionOrigins.forEach((g) =>
-          persist(g.section, { x: Math.round(g.section.x), y: Math.round(g.section.y) })
-        );
-        containedSectionOrigins = [];
-      }
+      if (drag.sectionDrag) containedDrag.commit();
       drag = null;
     }
     window.removeEventListener("mousemove", onDrag);

@@ -7,10 +7,13 @@
 // selection state (the single `selected` item and the marquee `group`) and the
 // cross-layer origin helpers used when another layer drags a shared group.
 
+import { createDragSet } from "./drag-set.js";
+
 export function createSelection({ getItems, place, persist, onChange }) {
   let selected = null;
   let group = []; // items marquee-selected for a group move
-  let origins = []; // [{ item, ox, oy }] captured when another layer drives a drag
+  // Drives the group's positions when another layer is doing the dragging.
+  const crossDrag = createDragSet({ place, persist });
 
   const notify = () => onChange && onChange();
 
@@ -60,32 +63,24 @@ export function createSelection({ getItems, place, persist, onChange }) {
   function reset() {
     selected = null;
     group = [];
-    origins = [];
+    crossDrag.clear();
   }
 
   /* ---- cross-layer group drag: another layer drives the move ---- */
 
   // Capture starting positions when another layer begins driving a group drag.
   function captureOrigins() {
-    origins = group.map((it) => ({ item: it, ox: it.x, oy: it.y }));
+    crossDrag.capture(group);
   }
 
   // Apply the driving layer's offset on each move event.
   function applyOffset(dx, dy) {
-    origins.forEach((o) => {
-      o.item.x = o.ox + dx;
-      o.item.y = o.oy + dy;
-      place(o.item);
-    });
-    if (origins.length) notify();
+    if (crossDrag.apply(dx, dy)) notify();
   }
 
   // Persist the moved items when the driving layer's drag ends.
   function commitMove() {
-    origins.forEach((o) =>
-      persist(o.item, { x: Math.round(o.item.x), y: Math.round(o.item.y) })
-    );
-    origins = [];
+    crossDrag.commit();
   }
 
   return {

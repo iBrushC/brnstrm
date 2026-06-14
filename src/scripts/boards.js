@@ -2,35 +2,7 @@
 
 import { api } from "./api.js";
 import { inlineEdit } from "./inline-edit.js";
-
-let toastEl = null;
-let toastTimer = null;
-
-function showToast(message, onUndo) {
-  if (toastEl) {
-    clearTimeout(toastTimer);
-    toastEl.remove();
-    toastEl = null;
-  }
-  toastEl = document.createElement("div");
-  toastEl.className = "toast";
-  const msg = document.createElement("span");
-  msg.textContent = message;
-  const undoBtn = document.createElement("button");
-  undoBtn.className = "toast-undo";
-  undoBtn.textContent = "Undo";
-  undoBtn.addEventListener("click", () => {
-    clearTimeout(toastTimer);
-    toastEl.remove();
-    toastEl = null;
-    onUndo();
-  });
-  toastEl.append(msg, undoBtn);
-  document.body.appendChild(toastEl);
-  toastTimer = setTimeout(() => {
-    if (toastEl) { toastEl.remove(); toastEl = null; }
-  }, 5000);
-}
+import { toast } from "./toast.js";
 
 export function createBoardBar({ listEl, addBtn, onSwitch }) {
   let boards = [];
@@ -139,23 +111,25 @@ export function createBoardBar({ listEl, addBtn, onSwitch }) {
 
     if (!snapshot) return;
 
-    showToast(`"${b.name}" deleted`, async () => {
-      try {
-        const newBoard = await api.createBoard(snapshot.name);
-        for (const node of snapshot.nodes || []) {
-          await api.createNode(newBoard.id, node);
+    toast(`"${b.name}" deleted`, {
+      onUndo: async () => {
+        try {
+          const newBoard = await api.createBoard(snapshot.name);
+          for (const node of snapshot.nodes || []) {
+            await api.createNode(newBoard.id, node);
+          }
+          for (const section of snapshot.sections || []) {
+            await api.createSection(newBoard.id, section);
+          }
+          for (const conn of snapshot.connections || []) {
+            await api.createConnection(newBoard.id, conn);
+          }
+          boards.push(newBoard);
+          switchTo(newBoard.id);
+        } catch (err) {
+          console.error("Board restore failed:", err);
         }
-        for (const section of snapshot.sections || []) {
-          await api.createSection(newBoard.id, section);
-        }
-        for (const conn of snapshot.connections || []) {
-          await api.createConnection(newBoard.id, conn);
-        }
-        boards.push(newBoard);
-        switchTo(newBoard.id);
-      } catch (err) {
-        console.error("Board restore failed:", err);
-      }
+      },
     });
   }
 

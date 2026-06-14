@@ -9,11 +9,17 @@ import { createConnectionLayer } from "./connections.js";
 import { createBoardBar } from "./boards.js";
 import { createHistory } from "./history.js";
 import { createRadialMenu } from "./radial.js";
+import { toast } from "./toast.js";
 
 /* ---------------- Theme ---------------- */
 const root = document.documentElement;
 const themeBtn = document.getElementById("theme-toggle");
 const themeLabel = themeBtn.querySelector(".theme-label");
+
+// Minimap colors come from CSS vars; resolving them is comparatively costly and
+// the minimap redraws on every pan/zoom/drag, so cache them here and refresh the
+// cache only when the theme actually changes.
+let themeColors = { border: "#2c2f38", accent: "#6ea8fe", textDim: "#888" };
 
 function applyTheme(theme) {
   root.setAttribute("data-theme", theme);
@@ -21,6 +27,12 @@ function applyTheme(theme) {
   try {
     localStorage.setItem("brnstrm-theme", theme);
   } catch (_) {}
+  const style = getComputedStyle(root);
+  themeColors = {
+    border: style.getPropertyValue("--border").trim() || "#2c2f38",
+    accent: style.getPropertyValue("--accent").trim() || "#6ea8fe",
+    textDim: style.getPropertyValue("--text-dim").trim() || "#888",
+  };
   drawMinimap(); // minimap colors are theme-derived
 }
 
@@ -107,23 +119,22 @@ function drawMinimap() {
   const offY = (H - bh * s) / 2 - (minY - pad) * s;
   const mm = (x, y) => ({ x: x * s + offX, y: y * s + offY });
 
-  const style = getComputedStyle(root);
   // Sections (outlined, behind nodes)
-  mmCtx.strokeStyle = style.getPropertyValue("--border").trim() || "#2c2f38";
+  mmCtx.strokeStyle = themeColors.border;
   mmCtx.lineWidth = 1;
   for (const sec of sectionRects) {
     const p = mm(sec.x, sec.y);
     mmCtx.strokeRect(p.x, p.y, Math.max(2, sec.w * s), Math.max(2, sec.h * s));
   }
   // Nodes
-  mmCtx.fillStyle = style.getPropertyValue("--accent").trim() || "#6ea8fe";
+  mmCtx.fillStyle = themeColors.accent;
   for (const n of rects) {
     const p = mm(n.x, n.y);
     mmCtx.fillRect(p.x, p.y, Math.max(2, n.w * s), Math.max(2, n.h * s));
   }
   // Current viewport indicator
   const a = mm(vis.x, vis.y);
-  mmCtx.strokeStyle = style.getPropertyValue("--text-dim").trim() || "#888";
+  mmCtx.strokeStyle = themeColors.textDim;
   mmCtx.lineWidth = 1;
   mmCtx.strokeRect(a.x, a.y, vis.w * s, vis.h * s);
 }
@@ -292,6 +303,40 @@ helpClose.addEventListener("click", () => {
   helpBtn.classList.remove("active");
 });
 
+/* ---------------- Undo history ---------------- */
+const history = createHistory();
+
+/* ---------------- Boards ---------------- */
+// Declared before the camera-save helper and the layer wiring below so every
+// closure that reads `boards` (scheduleCameraSave, each layer's getBoardId)
+// captures an already-initialized binding. onSwitch only runs later, when
+// boards.load() is called, by which point the layers exist.
+const boards = createBoardBar({
+  listEl: document.getElementById("board-list"),
+  addBtn: document.getElementById("add-board"),
+  onSwitch: async (id) => {
+    try {
+      const data = await api.getBoard(id);
+      // Undo is per-board: reset the stack here, before any layer repopulates.
+      history.clear();
+      nodeLayer.load(data.nodes);
+      sections.load(data.sections);
+      connections.load(data.connections);
+      if (data.camera && typeof data.camera.x === "number") {
+        view.x = data.camera.x;
+        view.y = data.camera.y;
+        view.scale = data.camera.scale;
+        render();
+      } else {
+        recenter();
+      }
+    } catch (err) {
+      console.error(err);
+      render();
+    }
+  },
+});
+
 /* ---------------- Camera persistence ---------------- */
 let cameraSaveTimer = null;
 function scheduleCameraSave() {
@@ -305,9 +350,6 @@ function scheduleCameraSave() {
     }
   }, 400);
 }
-
-/* ---------------- Undo history ---------------- */
-const history = createHistory();
 
 /* ---------------- Radial add menu ---------------- */
 // Each quarter spawns a different kind of thing. "Note" spawns instantly at the
@@ -475,46 +517,12 @@ connections = createConnectionLayer({
   history,
 });
 
-const boards = createBoardBar({
-  listEl: document.getElementById("board-list"),
-  addBtn: document.getElementById("add-board"),
-  onSwitch: async (id) => {
-    try {
-      const data = await api.getBoard(id);
-      nodeLayer.load(data.nodes);
-      sections.load(data.sections);
-      connections.load(data.connections);
-      if (data.camera && typeof data.camera.x === "number") {
-        view.x = data.camera.x;
-        view.y = data.camera.y;
-        view.scale = data.camera.scale;
-        render();
-      } else {
-        recenter();
-      }
-    } catch (err) {
-      console.error(err);
-      render();
-    }
-  },
-});
-
 /* ---------------- File drop → resource + node ---------------- */
 // Dragging files onto the canvas uploads each to the board's resources folder
 // and drops a node at the cursor whose body is just a "@[file]" reference
 // (which renders as an image preview or a file chip). A depth counter keeps the
 // drop-zone highlight stable as the drag passes over child elements.
 let dragDepth = 0;
-
-function showInfoToast(message) {
-  const el = document.createElement("div");
-  el.className = "toast";
-  const msg = document.createElement("span");
-  msg.textContent = message;
-  el.appendChild(msg);
-  document.body.appendChild(el);
-  setTimeout(() => el.remove(), 4000);
-}
 
 // Only react to drags that actually carry files (ignore in-canvas element drags).
 function hasFiles(e) {
@@ -585,7 +593,7 @@ canvas.addEventListener("drop", async (e) => {
 
   let msg = ok === 1 ? "Added 1 file" : "Added " + ok + " files";
   if (failed) msg += " · " + failed + " failed";
-  showInfoToast(msg);
+  toast(msg);
 });
 
 await boards.load();

@@ -6,6 +6,7 @@ import { view } from "./view.js";
 import { api } from "./api.js";
 import { inlineEdit } from "./inline-edit.js";
 import { createSelection } from "./selection.js";
+import { createDragSet } from "./drag-set.js";
 import { createMarkdownEditor } from "./markdown-editor.js";
 
 const DEFAULT_W = 220;
@@ -32,21 +33,28 @@ export function createNodeLayer({
   onGroupDragEnd,
 }) {
   let nodes = []; // { id, x, y, w, h, content, el, editor }
-  let containedOrigins = []; // captured when a section drag moves its contained nodes
 
   const locked = () => (typeof isLocked === "function" ? isLocked() : false);
+
+  const place = (n) => {
+    n.el.style.left = n.x + "px";
+    n.el.style.top = n.y + "px";
+  };
+  const persistMove = (n, patch) => persist(n, patch);
 
   // Single + marquee-group selection (shared with the section layer).
   const sel = createSelection({
     getItems: () => nodes,
-    place: (n) => {
-      n.el.style.left = n.x + "px";
-      n.el.style.top = n.y + "px";
-    },
-    persist: (n, patch) => persist(n, patch),
+    place,
+    persist: persistMove,
     onChange,
   });
   const select = sel.select;
+
+  // Moves the actively-dragged node(s); and, separately, the nodes a section
+  // contains while that section is dragged (driven from the section layer).
+  const activeDrag = createDragSet({ place, persist: persistMove });
+  const containedDrag = createDragSet({ place, persist: persistMove });
 
   document.addEventListener("mousedown", (e) => {
     if (!e.shiftKey && !e.target.closest(".node")) select(null);
@@ -58,11 +66,10 @@ export function createNodeLayer({
     sel.reset();
   }
 
-  // Replace the current board's nodes with `list` (from the API). Undo history
-  // is per-board, so switching boards starts a fresh stack.
+  // Replace the current board's nodes with `list` (from the API). The undo stack
+  // is reset by the board switch itself (see app.js), before any layer loads.
   function load(list) {
     clear();
-    if (history) history.clear();
     list.forEach(addNodeEl);
     onChange();
   }
@@ -199,16 +206,8 @@ export function createNodeLayer({
     const group = sel.getGroup();
     const inGroup = sel.isInGroup(node);
     // If this node is part of a marquee group, drag the whole group.
-    if (group.length > 1 && inGroup) {
-      drag = {
-        group: group.map((n) => ({ node: n, ox: n.x, oy: n.y })),
-        sx: e.clientX,
-        sy: e.clientY,
-        crossLayer: true,
-      };
-    } else {
-      drag = { node, sx: e.clientX, sy: e.clientY, ox: node.x, oy: node.y, crossLayer: inGroup };
-    }
+    activeDrag.capture(group.length > 1 && inGroup ? group : [node]);
+    drag = { sx: e.clientX, sy: e.clientY, crossLayer: inGroup };
     if (inGroup && onGroupDragStart) onGroupDragStart();
     window.addEventListener("mousemove", onDrag);
     window.addEventListener("mouseup", endDrag);
@@ -218,30 +217,14 @@ export function createNodeLayer({
     if (!drag) return;
     const dx = (e.clientX - drag.sx) / view.scale;
     const dy = (e.clientY - drag.sy) / view.scale;
-    if (drag.group) {
-      drag.group.forEach((g) => {
-        g.node.x = g.ox + dx;
-        g.node.y = g.oy + dy;
-        g.node.el.style.left = g.node.x + "px";
-        g.node.el.style.top = g.node.y + "px";
-      });
-    } else {
-      drag.node.x = drag.ox + dx;
-      drag.node.y = drag.oy + dy;
-      drag.node.el.style.left = drag.node.x + "px";
-      drag.node.el.style.top = drag.node.y + "px";
-    }
+    activeDrag.apply(dx, dy);
     if (drag.crossLayer && onGroupDragMove) onGroupDragMove(dx, dy);
     onChange();
   }
 
   function endDrag() {
     if (drag) {
-      if (drag.group) {
-        drag.group.forEach((g) => persist(g.node, { x: g.node.x, y: g.node.y }));
-      } else {
-        persist(drag.node, { x: drag.node.x, y: drag.node.y });
-      }
+      activeDrag.commit();
       if (drag.crossLayer && onGroupDragEnd) onGroupDragEnd();
       drag = null;
     }
@@ -251,24 +234,23 @@ export function createNodeLayer({
 
   // Called when a single section starts moving — capture nodes fully inside it.
   function captureNodesInRect(rect) {
-    containedOrigins = nodes
-      .filter((n) => n.x >= rect.x && n.y >= rect.y && n.x + n.w <= rect.x + rect.w && n.y + n.h <= rect.y + rect.h)
-      .map((n) => ({ node: n, ox: n.x, oy: n.y }));
+    containedDrag.capture(
+      nodes.filter(
+        (n) =>
+          n.x >= rect.x &&
+          n.y >= rect.y &&
+          n.x + n.w <= rect.x + rect.w &&
+          n.y + n.h <= rect.y + rect.h
+      )
+    );
   }
 
   function applyContainedOffset(dx, dy) {
-    containedOrigins.forEach((g) => {
-      g.node.x = g.ox + dx;
-      g.node.y = g.oy + dy;
-      g.node.el.style.left = g.node.x + "px";
-      g.node.el.style.top = g.node.y + "px";
-    });
-    if (containedOrigins.length) onChange();
+    if (containedDrag.apply(dx, dy)) onChange();
   }
 
   function commitContainedMove() {
-    containedOrigins.forEach((g) => persist(g.node, { x: g.node.x, y: g.node.y }));
-    containedOrigins = [];
+    containedDrag.commit();
   }
 
   /* ---- resizing (bottom-right handle) ---- */
