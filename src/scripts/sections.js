@@ -13,13 +13,20 @@ import { api } from "./api.js";
 const MIN_SIZE = 24; // world px — drags smaller than this are treated as a miss
 const DEFAULT_LABEL = "section";
 
-export function createSectionLayer({ layer, canvas, getBoardId, onChange, history }) {
+export function createSectionLayer({ layer, canvas, getBoardId, onChange, history, onGroupDragStart, onGroupDragMove, onGroupDragEnd, onSectionDragStart, onSectionDragMove, onSectionDragEnd }) {
   let sections = []; // { id, x, y, w, h, label, el, labelEl }
   let selected = null;
   let drawing = false;
   let drawState = null;
+  let groupSel = []; // sections currently marquee-selected for group move
+  let groupOrigins = []; // captured when another layer drives a group drag
 
   const notify = () => onChange && onChange();
+
+  function clearGroupSel() {
+    groupSel.forEach((s) => s.el.classList.remove("group-selected"));
+    groupSel = [];
+  }
 
   document.addEventListener("mousedown", (e) => {
     if (!e.target.closest(".section")) select(null);
@@ -29,6 +36,18 @@ export function createSectionLayer({ layer, canvas, getBoardId, onChange, histor
     if (selected) selected.el.classList.remove("selected");
     selected = section;
     if (section) section.el.classList.add("selected");
+    if (!section || !groupSel.includes(section)) clearGroupSel();
+  }
+
+  function selectInRect(worldRect) {
+    clearGroupSel();
+    groupSel = sections.filter((s) =>
+      s.x < worldRect.x + worldRect.w &&
+      s.x + s.w > worldRect.x &&
+      s.y < worldRect.y + worldRect.h &&
+      s.y + s.h > worldRect.y
+    );
+    groupSel.forEach((s) => s.el.classList.add("group-selected"));
   }
 
   function clear() {
@@ -114,10 +133,11 @@ export function createSectionLayer({ layer, canvas, getBoardId, onChange, histor
   }
 
   /* ---- label editing ---- */
-  function beginEditLabel(section) {
+  function beginEditLabel(section, initialValue) {
     const input = document.createElement("input");
     input.className = "section-label-input";
-    input.value = section.label;
+    input.value = initialValue !== undefined ? initialValue : section.label;
+    input.placeholder = DEFAULT_LABEL;
     section.labelEl.replaceWith(input);
     input.focus();
     input.select();
@@ -126,7 +146,7 @@ export function createSectionLayer({ layer, canvas, getBoardId, onChange, histor
     const commit = () => {
       if (done) return;
       done = true;
-      const label = input.value.trim() || section.label;
+      const label = input.value.trim() || section.label || DEFAULT_LABEL;
       section.label = label;
       section.labelEl.textContent = label;
       input.replaceWith(section.labelEl);
@@ -150,28 +170,83 @@ export function createSectionLayer({ layer, canvas, getBoardId, onChange, histor
     if (e.target.classList.contains("section-delete")) return;
     e.preventDefault();
     e.stopPropagation();
+    const inGroup = groupSel.includes(section);
     select(section);
-    drag = { section, sx: e.clientX, sy: e.clientY, ox: section.x, oy: section.y };
+    if (groupSel.length > 1 && inGroup) {
+      drag = {
+        group: groupSel.map((s) => ({ section: s, ox: s.x, oy: s.y })),
+        sx: e.clientX,
+        sy: e.clientY,
+        crossLayer: true,
+      };
+    } else {
+      drag = { section, sx: e.clientX, sy: e.clientY, ox: section.x, oy: section.y, crossLayer: inGroup, sectionDrag: !inGroup };
+    }
+    if (inGroup && onGroupDragStart) onGroupDragStart();
+    if (!inGroup && onSectionDragStart) onSectionDragStart(section);
     window.addEventListener("mousemove", onDrag);
     window.addEventListener("mouseup", endDrag);
   }
   function onDrag(e) {
     if (!drag) return;
-    drag.section.x = drag.ox + (e.clientX - drag.sx) / view.scale;
-    drag.section.y = drag.oy + (e.clientY - drag.sy) / view.scale;
-    applyRect(drag.section.el, drag.section);
+    const dx = (e.clientX - drag.sx) / view.scale;
+    const dy = (e.clientY - drag.sy) / view.scale;
+    if (drag.group) {
+      drag.group.forEach((g) => {
+        g.section.x = g.ox + dx;
+        g.section.y = g.oy + dy;
+        applyRect(g.section.el, g.section);
+      });
+    } else {
+      drag.section.x = drag.ox + dx;
+      drag.section.y = drag.oy + dy;
+      applyRect(drag.section.el, drag.section);
+    }
+    if (drag.crossLayer && onGroupDragMove) onGroupDragMove(dx, dy);
+    if (drag.sectionDrag && onSectionDragMove) onSectionDragMove(dx, dy);
     notify();
   }
   function endDrag() {
     if (drag) {
-      persist(drag.section, {
-        x: Math.round(drag.section.x),
-        y: Math.round(drag.section.y),
-      });
+      if (drag.group) {
+        drag.group.forEach((g) =>
+          persist(g.section, { x: Math.round(g.section.x), y: Math.round(g.section.y) })
+        );
+      } else {
+        persist(drag.section, {
+          x: Math.round(drag.section.x),
+          y: Math.round(drag.section.y),
+        });
+      }
+      if (drag.crossLayer && onGroupDragEnd) onGroupDragEnd();
+      if (drag.sectionDrag && onSectionDragEnd) onSectionDragEnd();
       drag = null;
     }
     window.removeEventListener("mousemove", onDrag);
     window.removeEventListener("mouseup", endDrag);
+  }
+
+  // Called by another layer when it starts driving a group drag.
+  function captureGroupOrigins() {
+    groupOrigins = groupSel.map((s) => ({ section: s, ox: s.x, oy: s.y }));
+  }
+
+  // Called by another layer on each move event during its group drag.
+  function applyGroupOffset(dx, dy) {
+    groupOrigins.forEach((g) => {
+      g.section.x = g.ox + dx;
+      g.section.y = g.oy + dy;
+      applyRect(g.section.el, g.section);
+    });
+    if (groupOrigins.length) notify();
+  }
+
+  // Called by another layer when its group drag ends.
+  function commitGroupMove() {
+    groupOrigins.forEach((g) =>
+      persist(g.section, { x: Math.round(g.section.x), y: Math.round(g.section.y) })
+    );
+    groupOrigins = [];
   }
 
   /* ---- resizing (bottom-right) ---- */
@@ -340,7 +415,7 @@ export function createSectionLayer({ layer, canvas, getBoardId, onChange, histor
       });
       const created = addSectionEl(section);
       select(created);
-      beginEditLabel(created);
+      beginEditLabel(created, "");
       notify();
     } catch (err) {
       console.error(err);
@@ -359,5 +434,10 @@ export function createSectionLayer({ layer, canvas, getBoardId, onChange, histor
     deleteSelected,
     getRects,
     isDrawing: () => drawing,
+    selectInRect,
+    clearGroupSel,
+    captureGroupOrigins,
+    applyGroupOffset,
+    commitGroupMove,
   };
 }

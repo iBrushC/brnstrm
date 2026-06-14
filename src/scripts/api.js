@@ -17,6 +17,7 @@ export const api = {
   listBoards: () => req("GET", "/api/boards"),
   createBoard: (name) => req("POST", "/api/boards", { name }),
   renameBoard: (id, name) => req("PATCH", board(id), { name }),
+  deleteBoard: (id) => req("DELETE", board(id)),
   saveBoardCamera: (id, camera) => req("PATCH", board(id), { camera }),
   getBoard: (id) => req("GET", board(id)),
   createNode: (id, node) => req("POST", board(id) + "/nodes", node),

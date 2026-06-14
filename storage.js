@@ -118,7 +118,7 @@ function nextNodeId(layout) {
     const m = /^node-(\d+)$/.exec(n.id);
     if (m) max = Math.max(max, Number(m[1]));
   }
-  return "node-" + (max + 1);
+  return "note-" + (max + 1);
 }
 
 /* ---------- section geometry & filesystem mirroring ---------- */
@@ -302,6 +302,12 @@ function renameBoard(id, name) {
     } catch (_) {}
   }
   return { id, name: layout.name };
+}
+
+function deleteBoard(id) {
+  const dir = boardDir(id);
+  fs.rmSync(dir, { recursive: true, force: true });
+  return { ok: true };
 }
 
 function saveCameraPosition(id, camera) {
@@ -602,6 +608,7 @@ async function handleApi(req, res, pathname) {
       if (!safeSeg(id) || !fs.existsSync(boardDir(id)))
         return sendJson(res, 404, { error: "board not found" });
       if (method === "GET") return sendJson(res, 200, getBoard(id));
+      if (method === "DELETE") return sendJson(res, 200, deleteBoard(id));
       if (method === "PATCH") {
         const body = await readBody(req);
         if (body.camera && typeof body.camera.x === "number") {

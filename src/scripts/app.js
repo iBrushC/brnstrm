@@ -186,30 +186,89 @@ canvas.addEventListener(
 let panning = false;
 let startX = 0;
 let startY = 0;
+let boxSel = null;
+
+// Show grab cursor while Shift is held (signals pan mode is available).
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Shift" && !panning) canvas.classList.add("shift-held");
+});
+document.addEventListener("keyup", (e) => {
+  if (e.key === "Shift") canvas.classList.remove("shift-held");
+});
 
 canvas.addEventListener("mousedown", (e) => {
   if (e.button !== 0 || e.target.closest("#hud")) return;
   // Clicking empty canvas while aiming an arrow cancels the pending connect.
   if (connections && connections.isConnecting() && !e.target.closest(".node")) {
     connections.cancelConnect();
+    return;
   }
-  panning = true;
-  startX = e.clientX - view.x;
-  startY = e.clientY - view.y;
-  canvas.classList.add("panning");
+
+  if (e.shiftKey) {
+    // Shift + drag = pan
+    panning = true;
+    startX = e.clientX - view.x;
+    startY = e.clientY - view.y;
+    canvas.classList.add("panning");
+    canvas.classList.remove("shift-held");
+  } else {
+    // Plain drag on empty canvas = marquee box selection
+    const r = canvas.getBoundingClientRect();
+    const startWorld = screenToWorld(e.clientX - r.left, e.clientY - r.top);
+    const previewEl = document.createElement("div");
+    previewEl.id = "box-select";
+    canvas.appendChild(previewEl);
+    boxSel = { startWorld, startScreen: { x: e.clientX, y: e.clientY }, previewEl, canvasRect: r };
+    canvas.classList.add("box-selecting");
+  }
 });
 
 window.addEventListener("mousemove", (e) => {
-  if (!panning) return;
-  view.x = e.clientX - startX;
-  view.y = e.clientY - startY;
-  render();
+  if (panning) {
+    view.x = e.clientX - startX;
+    view.y = e.clientY - startY;
+    render();
+  }
+  if (boxSel) {
+    const x = Math.min(e.clientX, boxSel.startScreen.x) - boxSel.canvasRect.left;
+    const y = Math.min(e.clientY, boxSel.startScreen.y) - boxSel.canvasRect.top;
+    const w = Math.abs(e.clientX - boxSel.startScreen.x);
+    const h = Math.abs(e.clientY - boxSel.startScreen.y);
+    boxSel.previewEl.style.left = x + "px";
+    boxSel.previewEl.style.top = y + "px";
+    boxSel.previewEl.style.width = w + "px";
+    boxSel.previewEl.style.height = h + "px";
+  }
 });
 
-window.addEventListener("mouseup", () => {
-  panning = false;
-  canvas.classList.remove("panning");
-  if (!panning) scheduleCameraSave();
+window.addEventListener("mouseup", (e) => {
+  if (panning) {
+    panning = false;
+    canvas.classList.remove("panning");
+    if (e.shiftKey) canvas.classList.add("shift-held");
+    scheduleCameraSave();
+  }
+  if (boxSel) {
+    canvas.classList.remove("box-selecting");
+    boxSel.previewEl.remove();
+    const r = boxSel.canvasRect;
+    const endWorld = screenToWorld(e.clientX - r.left, e.clientY - r.top);
+    const selRect = {
+      x: Math.min(boxSel.startWorld.x, endWorld.x),
+      y: Math.min(boxSel.startWorld.y, endWorld.y),
+      w: Math.abs(endWorld.x - boxSel.startWorld.x),
+      h: Math.abs(endWorld.y - boxSel.startWorld.y),
+    };
+    if (selRect.w > 4 && selRect.h > 4) {
+      if (nodeLayer) nodeLayer.selectInRect(selRect);
+      if (sections) sections.selectInRect(selRect);
+    } else {
+      // Tiny drag = click — clear any existing group selection
+      if (nodeLayer) nodeLayer.clearGroupSel();
+      if (sections) sections.clearGroupSel();
+    }
+    boxSel = null;
+  }
 });
 
 // Don't let HUD interactions start a pan.
@@ -380,6 +439,9 @@ nodeLayer = createNodeLayer({
   isLocked: () => connections && connections.isConnecting(),
   onNodeClick: (node) => connections && connections.startDragFrom(node),
   onDelete: (nodeId) => connections && connections.removeForNode(nodeId),
+  onGroupDragStart: () => sections && sections.captureGroupOrigins(),
+  onGroupDragMove: (dx, dy) => sections && sections.applyGroupOffset(dx, dy),
+  onGroupDragEnd: () => sections && sections.commitGroupMove(),
 });
 
 sections = createSectionLayer({
@@ -388,6 +450,12 @@ sections = createSectionLayer({
   getBoardId: () => boards.current(),
   onChange: refresh,
   history,
+  onGroupDragStart: () => nodeLayer && nodeLayer.captureGroupOrigins(),
+  onGroupDragMove: (dx, dy) => nodeLayer && nodeLayer.applyGroupOffset(dx, dy),
+  onGroupDragEnd: () => nodeLayer && nodeLayer.commitGroupMove(),
+  onSectionDragStart: (section) => nodeLayer && nodeLayer.captureNodesInRect(section),
+  onSectionDragMove: (dx, dy) => nodeLayer && nodeLayer.applyContainedOffset(dx, dy),
+  onSectionDragEnd: () => nodeLayer && nodeLayer.commitContainedMove(),
 });
 
 connections = createConnectionLayer({

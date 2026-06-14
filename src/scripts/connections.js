@@ -116,8 +116,42 @@ export function createConnectionLayer({
     return { x: c.x + dx * t, y: c.y + dy * t };
   }
 
+  // Find where the ray from `origin` toward `target` first exits `rect`'s border.
+  // Used to compute the start/end of offset parallel arrows that still connect
+  // to the actual node edges rather than floating in mid-air next to them.
+  function offsetBorderPoint(rect, origin, target) {
+    const dx = target.x - origin.x;
+    const dy = target.y - origin.y;
+    if (!dx && !dy) return center(rect);
+    const EPS = 1e-6;
+    let tMin = Infinity;
+    if (Math.abs(dx) > EPS) {
+      for (const wallX of [rect.x, rect.x + rect.w]) {
+        const t = (wallX - origin.x) / dx;
+        if (t > EPS) {
+          const y = origin.y + t * dy;
+          if (y >= rect.y - EPS && y <= rect.y + rect.h + EPS) tMin = Math.min(tMin, t);
+        }
+      }
+    }
+    if (Math.abs(dy) > EPS) {
+      for (const wallY of [rect.y, rect.y + rect.h]) {
+        const t = (wallY - origin.y) / dy;
+        if (t > EPS) {
+          const x = origin.x + t * dx;
+          if (x >= rect.x - EPS && x <= rect.x + rect.w + EPS) tMin = Math.min(tMin, t);
+        }
+      }
+    }
+    if (tMin === Infinity) return center(rect);
+    return { x: origin.x + tMin * dx, y: origin.y + tMin * dy };
+  }
+
   // Reposition every arrow from current node geometry. Arrows whose endpoints
   // are missing (node deleted mid-frame) hide until cleaned up.
+  const PAIR_OFFSET = 32;       // px world-space perpendicular offset for bidirectional pairs
+  const LABEL_PAIR_OFFSET = 16; // px label offset along connection direction for nearly-vertical pairs
+
   function redraw() {
     for (const conn of conns) {
       const fromR = getNodeRect(conn.from);
@@ -129,14 +163,54 @@ export function createConnectionLayer({
       }
       conn.line.style.display = "";
       conn.labelEl.style.display = "";
-      const a = borderPoint(fromR, center(toR));
-      const b = borderPoint(toR, center(fromR));
-      conn.line.setAttribute("x1", a.x);
-      conn.line.setAttribute("y1", a.y);
-      conn.line.setAttribute("x2", b.x);
-      conn.line.setAttribute("y2", b.y);
-      conn.labelEl.style.left = (a.x + b.x) / 2 + "px";
-      conn.labelEl.style.top = (a.y + b.y) / 2 + "px";
+
+      let x1, y1, x2, y2, labelX, labelY;
+      const pairConn = conns.find(c => c.from === conn.to && c.to === conn.from);
+      if (pairConn) {
+        // Shift the center-to-center axis perpendicular by PAIR_OFFSET, then
+        // find where that offset axis intersects each node border. This keeps
+        // both endpoints on the actual box edges regardless of angle.
+        const fromC = center(fromR);
+        const toC = center(toR);
+        const cdx = toC.x - fromC.x;
+        const cdy = toC.y - fromC.y;
+        const clen = Math.sqrt(cdx * cdx + cdy * cdy) || 1;
+        const ux = cdx / clen;
+        const uy = cdy / clen;
+        const perpX = -uy * PAIR_OFFSET;
+        const perpY =  ux * PAIR_OFFSET;
+        const fromCOff = { x: fromC.x + perpX, y: fromC.y + perpY };
+        const toCOff   = { x: toC.x   + perpX, y: toC.y   + perpY };
+        const pa = offsetBorderPoint(fromR, fromCOff, toCOff);
+        const pb = offsetBorderPoint(toR, toCOff, fromCOff);
+        x1 = pa.x; y1 = pa.y;
+        x2 = pb.x; y2 = pb.y;
+
+        labelX = (x1 + x2) / 2;
+        labelY = (y1 + y2) / 2;
+
+        // When nodes are nearly vertically aligned both labels share nearly the
+        // same x midpoint and can overlap. Offset them along the connection
+        // direction (parallel) so one sits above and the other below center.
+        if (Math.abs(uy) > Math.abs(ux)) {
+          labelX += ux * LABEL_PAIR_OFFSET;
+          labelY += uy * LABEL_PAIR_OFFSET;
+        }
+      } else {
+        const a = borderPoint(fromR, center(toR));
+        const b = borderPoint(toR, center(fromR));
+        x1 = a.x; y1 = a.y;
+        x2 = b.x; y2 = b.y;
+        labelX = (x1 + x2) / 2;
+        labelY = (y1 + y2) / 2;
+      }
+
+      conn.line.setAttribute("x1", x1);
+      conn.line.setAttribute("y1", y1);
+      conn.line.setAttribute("x2", x2);
+      conn.line.setAttribute("y2", y2);
+      conn.labelEl.style.left = labelX + "px";
+      conn.labelEl.style.top  = labelY + "px";
     }
   }
 
@@ -323,6 +397,7 @@ export function createConnectionLayer({
     cancelConnect(); // one arrow per activation; exit the mode
 
     if (!target || target.id === fromId) return; // released on nothing / self
+    if (conns.some(c => c.from === fromId && c.to === target.id)) return; // already exists
     const boardId = getBoardId();
     if (!boardId) return;
     try {

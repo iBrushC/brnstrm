@@ -24,21 +24,45 @@ export function createNodeLayer({
   onNodeClick,
   onDelete,
   isLocked,
+  onGroupDragStart,
+  onGroupDragMove,
+  onGroupDragEnd,
 }) {
   let nodes = []; // { id, x, y, w, h, content, el, textarea }
   let selected = null;
+  let groupSel = []; // nodes currently marquee-selected for group move
+  let groupOrigins = []; // captured when another layer drives a group drag
+  let containedOrigins = []; // captured when a section drag moves its contained nodes
 
   const locked = () => (typeof isLocked === "function" ? isLocked() : false);
+
+  function clearGroupSel() {
+    groupSel.forEach((n) => n.el.classList.remove("group-selected"));
+    groupSel = [];
+  }
 
   function select(node) {
     if (selected) selected.el.classList.remove("selected");
     selected = node;
     if (node) node.el.classList.add("selected");
+    // Clear group unless we're clicking into a group member (to allow group drag).
+    if (!node || !groupSel.includes(node)) clearGroupSel();
   }
 
   document.addEventListener("mousedown", (e) => {
     if (!e.target.closest(".node")) select(null);
   });
+
+  function selectInRect(worldRect) {
+    clearGroupSel();
+    groupSel = nodes.filter((n) =>
+      n.x < worldRect.x + worldRect.w &&
+      n.x + n.w > worldRect.x &&
+      n.y < worldRect.y + worldRect.h &&
+      n.y + n.h > worldRect.y
+    );
+    groupSel.forEach((n) => n.el.classList.add("group-selected"));
+  }
 
   function clear() {
     viewport.innerHTML = "";
@@ -139,7 +163,7 @@ export function createNodeLayer({
   /* ---- renaming (title bar) ---- */
   // Swap the title bar for an inline input. The node id is shown as a
   // placeholder so an emptied name reverts the file to its id on disk.
-  function beginRename(node) {
+  function beginRename(node, { onCommit } = {}) {
     const input = document.createElement("input");
     input.className = "node-name-input";
     input.value = node.name || "";
@@ -157,6 +181,7 @@ export function createNodeLayer({
       node.bar.textContent = name || node.id;
       input.replaceWith(node.bar);
       rename(node, name);
+      if (onCommit) onCommit();
     };
     input.addEventListener("blur", commit);
     input.addEventListener("keydown", (e) => {
@@ -184,31 +209,103 @@ export function createNodeLayer({
   let drag = null;
 
   function startDrag(e, node) {
-    if (e.button !== 0) return; // ignore right-click (rename) and middle-click
-    if (locked()) return; // e.g. picking endpoints in connect mode
+    if (e.button !== 0) return;
+    if (locked()) return;
     e.preventDefault();
-    drag = { node, sx: e.clientX, sy: e.clientY, ox: node.x, oy: node.y };
+    const inGroup = groupSel.includes(node);
+    // If this node is part of a marquee group, drag the whole group.
+    if (groupSel.length > 1 && inGroup) {
+      drag = {
+        group: groupSel.map((n) => ({ node: n, ox: n.x, oy: n.y })),
+        sx: e.clientX,
+        sy: e.clientY,
+        crossLayer: true,
+      };
+    } else {
+      drag = { node, sx: e.clientX, sy: e.clientY, ox: node.x, oy: node.y, crossLayer: inGroup };
+    }
+    if (inGroup && onGroupDragStart) onGroupDragStart();
     window.addEventListener("mousemove", onDrag);
     window.addEventListener("mouseup", endDrag);
   }
 
   function onDrag(e) {
     if (!drag) return;
-    // Screen delta -> world delta (account for zoom).
-    drag.node.x = drag.ox + (e.clientX - drag.sx) / view.scale;
-    drag.node.y = drag.oy + (e.clientY - drag.sy) / view.scale;
-    drag.node.el.style.left = drag.node.x + "px";
-    drag.node.el.style.top = drag.node.y + "px";
+    const dx = (e.clientX - drag.sx) / view.scale;
+    const dy = (e.clientY - drag.sy) / view.scale;
+    if (drag.group) {
+      drag.group.forEach((g) => {
+        g.node.x = g.ox + dx;
+        g.node.y = g.oy + dy;
+        g.node.el.style.left = g.node.x + "px";
+        g.node.el.style.top = g.node.y + "px";
+      });
+    } else {
+      drag.node.x = drag.ox + dx;
+      drag.node.y = drag.oy + dy;
+      drag.node.el.style.left = drag.node.x + "px";
+      drag.node.el.style.top = drag.node.y + "px";
+    }
+    if (drag.crossLayer && onGroupDragMove) onGroupDragMove(dx, dy);
     onChange();
   }
 
   function endDrag() {
     if (drag) {
-      persist(drag.node, { x: drag.node.x, y: drag.node.y });
+      if (drag.group) {
+        drag.group.forEach((g) => persist(g.node, { x: g.node.x, y: g.node.y }));
+      } else {
+        persist(drag.node, { x: drag.node.x, y: drag.node.y });
+      }
+      if (drag.crossLayer && onGroupDragEnd) onGroupDragEnd();
       drag = null;
     }
     window.removeEventListener("mousemove", onDrag);
     window.removeEventListener("mouseup", endDrag);
+  }
+
+  // Called by another layer when it starts driving a group drag.
+  function captureGroupOrigins() {
+    groupOrigins = groupSel.map((n) => ({ node: n, ox: n.x, oy: n.y }));
+  }
+
+  // Called by another layer on each move event during its group drag.
+  function applyGroupOffset(dx, dy) {
+    groupOrigins.forEach((g) => {
+      g.node.x = g.ox + dx;
+      g.node.y = g.oy + dy;
+      g.node.el.style.left = g.node.x + "px";
+      g.node.el.style.top = g.node.y + "px";
+    });
+    if (groupOrigins.length) onChange();
+  }
+
+  // Called by another layer when its group drag ends.
+  function commitGroupMove() {
+    groupOrigins.forEach((g) => persist(g.node, { x: g.node.x, y: g.node.y }));
+    groupOrigins = [];
+  }
+
+  // Called when a single section starts moving — capture nodes fully inside it.
+  function captureNodesInRect(rect) {
+    containedOrigins = nodes
+      .filter((n) => n.x >= rect.x && n.y >= rect.y && n.x + n.w <= rect.x + rect.w && n.y + n.h <= rect.y + rect.h)
+      .map((n) => ({ node: n, ox: n.x, oy: n.y }));
+  }
+
+  function applyContainedOffset(dx, dy) {
+    containedOrigins.forEach((g) => {
+      g.node.x = g.ox + dx;
+      g.node.y = g.oy + dy;
+      g.node.el.style.left = g.node.x + "px";
+      g.node.el.style.top = g.node.y + "px";
+    });
+    if (containedOrigins.length) onChange();
+  }
+
+  function commitContainedMove() {
+    containedOrigins.forEach((g) => persist(g.node, { x: g.node.x, y: g.node.y }));
+    containedOrigins = [];
   }
 
   /* ---- resizing (bottom-right handle) ---- */
@@ -265,7 +362,7 @@ export function createNodeLayer({
       const node = await api.createNode(id, { x: Math.round(wx), y: Math.round(wy) });
       const created = addNodeEl(node);
       select(created);
-      created.textarea.focus();
+      beginRename(created, { onCommit: () => setTimeout(() => created.textarea.focus(), 0) });
       onChange();
     } catch (err) {
       console.error(err);
@@ -333,5 +430,5 @@ export function createNodeLayer({
     return n ? { x: n.x, y: n.y, w: n.w, h: n.h } : null;
   }
 
-  return { load, clear, spawnAtWorld, deleteSelected, getRects, getNodeRect };
+  return { load, clear, spawnAtWorld, deleteSelected, getRects, getNodeRect, selectInRect, clearGroupSel, captureGroupOrigins, applyGroupOffset, commitGroupMove, captureNodesInRect, applyContainedOffset, commitContainedMove };
 }

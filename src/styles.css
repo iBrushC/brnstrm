@@ -115,6 +115,8 @@ body {
 }
 
 .board {
+  display: flex;
+  align-items: center;
   padding: 8px 10px;
   border-radius: 4px;
   color: var(--text-dim);
@@ -131,6 +133,44 @@ body {
   background: var(--bg);
   color: var(--text);
   border-left: 2px solid var(--accent);
+}
+
+.board-name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.board-delete {
+  flex: 0 0 auto;
+  width: 18px;
+  height: 18px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: inherit;
+  font-size: 15px;
+  line-height: 1;
+  color: var(--text-dim);
+  background: transparent;
+  border: none;
+  border-radius: 3px;
+  padding: 0;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.12s ease, color 0.12s ease;
+}
+
+.board:hover .board-delete,
+.board.active .board-delete {
+  opacity: 0.5;
+}
+
+.board:hover .board-delete:hover,
+.board.active .board-delete:hover {
+  opacity: 1;
+  color: var(--accent);
 }
 
 .board-rename {
@@ -176,11 +216,29 @@ body {
   position: relative;
   flex: 1;
   overflow: hidden;
+  cursor: default;
+}
+
+#canvas.shift-held {
   cursor: grab;
 }
 
 #canvas.panning {
   cursor: grabbing;
+}
+
+#canvas.box-selecting,
+#canvas.box-selecting * {
+  cursor: crosshair;
+}
+
+/* Marquee selection overlay */
+#box-select {
+  position: absolute;
+  border: 1.5px dashed var(--accent);
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+  pointer-events: none;
+  z-index: 9999;
 }
 
 /* Drawing a section: crosshair over the whole canvas. */
@@ -191,7 +249,8 @@ body {
 
 /* Connecting an arrow: crosshair everywhere; highlight the chosen source node. */
 body.connecting,
-body.connecting #canvas {
+body.connecting #canvas,
+body.connecting #canvas * {
   cursor: crosshair;
 }
 
@@ -250,6 +309,14 @@ body.connecting #canvas {
 .section.selected {
   outline: 2px solid var(--selection);
   outline-offset: 2px;
+}
+
+/* Group selection (box-select highlight) */
+.node.group-selected,
+.section.group-selected {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+  box-shadow: 0 0 0 5px var(--radial-hi);
 }
 
 .section-preview {
@@ -776,4 +843,39 @@ kbd {
   color: var(--text);
   border-color: var(--accent);
   background: var(--panel);
+}
+
+/* ---- Delete undo toast ---- */
+.toast {
+  position: fixed;
+  bottom: 20px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 14px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.3);
+  font-size: 13px;
+  color: var(--text);
+  z-index: 1000;
+  white-space: nowrap;
+}
+
+.toast-undo {
+  font-family: inherit;
+  font-size: 13px;
+  color: var(--accent);
+  background: transparent;
+  border: 1px solid var(--accent);
+  border-radius: 4px;
+  padding: 2px 8px;
+  cursor: pointer;
+}
+
+.toast-undo:hover {
+  background: color-mix(in srgb, var(--accent) 15%, transparent);
 }
