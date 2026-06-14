@@ -4,6 +4,8 @@
 
 import { view } from "./view.js";
 import { api } from "./api.js";
+import { inlineEdit } from "./inline-edit.js";
+import { createSelection } from "./selection.js";
 
 const DEFAULT_W = 220;
 const DEFAULT_H = 140;
@@ -29,45 +31,30 @@ export function createNodeLayer({
   onGroupDragEnd,
 }) {
   let nodes = []; // { id, x, y, w, h, content, el, textarea }
-  let selected = null;
-  let groupSel = []; // nodes currently marquee-selected for group move
-  let groupOrigins = []; // captured when another layer drives a group drag
   let containedOrigins = []; // captured when a section drag moves its contained nodes
 
   const locked = () => (typeof isLocked === "function" ? isLocked() : false);
 
-  function clearGroupSel() {
-    groupSel.forEach((n) => n.el.classList.remove("group-selected"));
-    groupSel = [];
-  }
-
-  function select(node) {
-    if (selected) selected.el.classList.remove("selected");
-    selected = node;
-    if (node) node.el.classList.add("selected");
-    // Clear group unless we're clicking into a group member (to allow group drag).
-    if (!node || !groupSel.includes(node)) clearGroupSel();
-  }
+  // Single + marquee-group selection (shared with the section layer).
+  const sel = createSelection({
+    getItems: () => nodes,
+    place: (n) => {
+      n.el.style.left = n.x + "px";
+      n.el.style.top = n.y + "px";
+    },
+    persist: (n, patch) => persist(n, patch),
+    onChange,
+  });
+  const select = sel.select;
 
   document.addEventListener("mousedown", (e) => {
-    if (!e.target.closest(".node")) select(null);
+    if (!e.shiftKey && !e.target.closest(".node")) select(null);
   });
-
-  function selectInRect(worldRect) {
-    clearGroupSel();
-    groupSel = nodes.filter((n) =>
-      n.x < worldRect.x + worldRect.w &&
-      n.x + n.w > worldRect.x &&
-      n.y < worldRect.y + worldRect.h &&
-      n.y + n.h > worldRect.y
-    );
-    groupSel.forEach((n) => n.el.classList.add("group-selected"));
-  }
 
   function clear() {
     viewport.innerHTML = "";
     nodes = [];
-    selected = null;
+    sel.reset();
   }
 
   // Replace the current board's nodes with `list` (from the API). Undo history
@@ -135,8 +122,12 @@ export function createNodeLayer({
         if (onNodeClick) onNodeClick(node);
         return;
       }
-      select(node);
-      if (onNodeClick) onNodeClick(node);
+      if (e.shiftKey) {
+        sel.shiftSelect(node);
+      } else {
+        select(node);
+        if (onNodeClick) onNodeClick(node);
+      }
     });
     bar.addEventListener("mousedown", (e) => startDrag(e, node));
     // Rename on right-click, consistent with renaming a board.
@@ -164,35 +155,18 @@ export function createNodeLayer({
   // Swap the title bar for an inline input. The node id is shown as a
   // placeholder so an emptied name reverts the file to its id on disk.
   function beginRename(node, { onCommit } = {}) {
-    const input = document.createElement("input");
-    input.className = "node-name-input";
-    input.value = node.name || "";
-    input.placeholder = node.id;
-    node.bar.replaceWith(input);
-    input.focus();
-    input.select();
-
-    let done = false;
-    const commit = () => {
-      if (done) return;
-      done = true;
-      const name = input.value.trim();
-      node.name = name;
-      node.bar.textContent = name || node.id;
-      input.replaceWith(node.bar);
-      rename(node, name);
-      if (onCommit) onCommit();
-    };
-    input.addEventListener("blur", commit);
-    input.addEventListener("keydown", (e) => {
-      e.stopPropagation();
-      if (e.key === "Enter") input.blur();
-      else if (e.key === "Escape") {
-        input.value = node.name || "";
-        input.blur();
-      }
+    inlineEdit(node.bar, {
+      className: "node-name-input",
+      value: node.name || "",
+      placeholder: node.id,
+      onCommit: (name, input) => {
+        node.name = name;
+        node.bar.textContent = name || node.id;
+        input.replaceWith(node.bar);
+        rename(node, name);
+        if (onCommit) onCommit();
+      },
     });
-    input.addEventListener("mousedown", (e) => e.stopPropagation());
   }
 
   async function rename(node, name) {
@@ -212,11 +186,12 @@ export function createNodeLayer({
     if (e.button !== 0) return;
     if (locked()) return;
     e.preventDefault();
-    const inGroup = groupSel.includes(node);
+    const group = sel.getGroup();
+    const inGroup = sel.isInGroup(node);
     // If this node is part of a marquee group, drag the whole group.
-    if (groupSel.length > 1 && inGroup) {
+    if (group.length > 1 && inGroup) {
       drag = {
-        group: groupSel.map((n) => ({ node: n, ox: n.x, oy: n.y })),
+        group: group.map((n) => ({ node: n, ox: n.x, oy: n.y })),
         sx: e.clientX,
         sy: e.clientY,
         crossLayer: true,
@@ -262,28 +237,6 @@ export function createNodeLayer({
     }
     window.removeEventListener("mousemove", onDrag);
     window.removeEventListener("mouseup", endDrag);
-  }
-
-  // Called by another layer when it starts driving a group drag.
-  function captureGroupOrigins() {
-    groupOrigins = groupSel.map((n) => ({ node: n, ox: n.x, oy: n.y }));
-  }
-
-  // Called by another layer on each move event during its group drag.
-  function applyGroupOffset(dx, dy) {
-    groupOrigins.forEach((g) => {
-      g.node.x = g.ox + dx;
-      g.node.y = g.oy + dy;
-      g.node.el.style.left = g.node.x + "px";
-      g.node.el.style.top = g.node.y + "px";
-    });
-    if (groupOrigins.length) onChange();
-  }
-
-  // Called by another layer when its group drag ends.
-  function commitGroupMove() {
-    groupOrigins.forEach((g) => persist(g.node, { x: g.node.x, y: g.node.y }));
-    groupOrigins = [];
   }
 
   // Called when a single section starts moving — capture nodes fully inside it.
@@ -374,7 +327,7 @@ export function createNodeLayer({
     node.el.remove();
     const i = nodes.indexOf(node);
     if (i !== -1) nodes.splice(i, 1);
-    if (selected === node) selected = null;
+    if (sel.getSelected() === node) sel.setSelected(null);
     if (onDelete) onDelete(node.id);
   }
 
@@ -414,6 +367,7 @@ export function createNodeLayer({
 
   // Delete the selected node, if any. Returns whether something was deleted.
   function deleteSelected() {
+    const selected = sel.getSelected();
     if (!selected) return false;
     deleteNode(selected);
     return true;
@@ -430,5 +384,20 @@ export function createNodeLayer({
     return n ? { x: n.x, y: n.y, w: n.w, h: n.h } : null;
   }
 
-  return { load, clear, spawnAtWorld, deleteSelected, getRects, getNodeRect, selectInRect, clearGroupSel, captureGroupOrigins, applyGroupOffset, commitGroupMove, captureNodesInRect, applyContainedOffset, commitContainedMove };
+  return {
+    load,
+    clear,
+    spawnAtWorld,
+    deleteSelected,
+    getRects,
+    getNodeRect,
+    selectInRect: sel.selectInRect,
+    clearGroupSel: sel.clearGroup,
+    captureGroupOrigins: sel.captureOrigins,
+    applyGroupOffset: sel.applyOffset,
+    commitGroupMove: sel.commitMove,
+    captureNodesInRect,
+    applyContainedOffset,
+    commitContainedMove,
+  };
 }

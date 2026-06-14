@@ -118,7 +118,7 @@ function nextNodeId(layout) {
     const m = /^node-(\d+)$/.exec(n.id);
     if (m) max = Math.max(max, Number(m[1]));
   }
-  return "note-" + (max + 1);
+  return "node-" + (max + 1);
 }
 
 /* ---------- section geometry & filesystem mirroring ---------- */
@@ -140,7 +140,7 @@ function rectArea(r) {
   return Math.max(0, r.w) * Math.max(0, r.h);
 }
 
-// A node is "in" a section only when its whole box is inside the section's box.
+// A node or section is "in" another section only when its whole box is inside.
 function sectionContains(s, n) {
   return (
     n.x >= s.x &&
@@ -150,53 +150,154 @@ function sectionContains(s, n) {
   );
 }
 
-// Where a node's .md file should live: the smallest (most specific) section that
+// Build a map of sectionId -> absolute expected folder path, accounting for
+// nesting (a section whose box is fully inside another section becomes a
+// subfolder of that section's folder).
+function buildSectionPaths(boardId, layout) {
+  const sections = sectionsOf(layout);
+  const root = boardDir(boardId);
+
+  // For each section find its parent: the smallest section that fully contains it.
+  const parentOf = new Map();
+  for (const s of sections) {
+    const containing = sections.filter(
+      (p) => p.id !== s.id && sectionContains(p, s)
+    );
+    if (!containing.length) {
+      parentOf.set(s.id, null);
+    } else {
+      containing.sort(
+        (a, b) => rectArea(a) - rectArea(b) || a.id.localeCompare(b.id)
+      );
+      parentOf.set(s.id, containing[0]);
+    }
+  }
+
+  const pathMap = new Map();
+
+  function getPath(s, visited = new Set()) {
+    if (pathMap.has(s.id)) return pathMap.get(s.id);
+    if (visited.has(s.id)) {
+      // Cycle guard (e.g. two equal-sized overlapping sections) — put at root.
+      const p = path.join(root, sectionSlug(s));
+      pathMap.set(s.id, p);
+      return p;
+    }
+    visited.add(s.id);
+    const parent = parentOf.get(s.id);
+    const p = parent
+      ? path.join(getPath(parent, visited), sectionSlug(s))
+      : path.join(root, sectionSlug(s));
+    pathMap.set(s.id, p);
+    return p;
+  }
+
+  for (const s of sections) getPath(s);
+  return pathMap;
+}
+
+// Where a node's .md file should live: the innermost (smallest) section that
 // fully contains it, or the board root when no section does.
-function targetDirForNode(boardId, layout, node) {
+// Pass a pre-built pathMap to avoid recomputing it when called in a loop.
+function targetDirForNode(boardId, layout, node, pathMap) {
   const containing = sectionsOf(layout).filter((s) => sectionContains(s, node));
   if (!containing.length) return boardDir(boardId);
-  containing.sort((a, b) => rectArea(a) - rectArea(b));
-  return path.join(boardDir(boardId), sectionSlug(containing[0]));
+  containing.sort((a, b) => rectArea(a) - rectArea(b) || a.id.localeCompare(b.id));
+  const inner = containing[0];
+  const map = pathMap || buildSectionPaths(boardId, layout);
+  return map.get(inner.id) || boardDir(boardId);
 }
 
-// Locate a node's .md file by its on-disk stem regardless of which folder it
-// currently sits in (board root or any subfolder), so we can move it when the
-// grouping changes.
+// Locate a node's .md file by stem, searching the entire board directory tree.
 function findNodeFile(boardId, stem) {
   const root = boardDir(boardId);
-  const seen = new Set();
-  const candidates = [path.join(root, stem + ".md")];
-  let entries = [];
-  try {
-    entries = fs.readdirSync(root, { withFileTypes: true });
-  } catch (_) {}
-  for (const d of entries) {
-    if (d.isDirectory()) candidates.push(path.join(root, d.name, stem + ".md"));
+
+  function search(dir) {
+    let entries = [];
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true });
+    } catch (_) {
+      return null;
+    }
+    for (const e of entries) {
+      if (e.isFile() && e.name === stem + ".md") return path.join(dir, e.name);
+      if (e.isDirectory()) {
+        const found = search(path.join(dir, e.name));
+        if (found) return found;
+      }
+    }
+    return null;
   }
-  for (const c of candidates) {
-    if (seen.has(c)) continue;
-    seen.add(c);
-    if (fs.existsSync(c)) return c;
-  }
-  return null;
+
+  return search(root);
 }
 
-// Make the on-disk folder tree match the current sections/nodes: create a
-// folder per section, move each node's file into its target folder, then drop
-// any leftover folders that no longer correspond to a section (relocating any
-// stray files back to the board root first).
-function reconcileSections(boardId, layout) {
+// Locate a section folder by its slug, searching the entire board directory tree.
+function findSectionDir(boardId, slug) {
   const root = boardDir(boardId);
 
-  for (const s of sectionsOf(layout)) {
+  function search(dir) {
+    let entries = [];
     try {
-      fs.mkdirSync(path.join(root, sectionSlug(s)), { recursive: true });
-    } catch (_) {}
+      entries = fs.readdirSync(dir, { withFileTypes: true });
+    } catch (_) {
+      return null;
+    }
+    for (const e of entries) {
+      if (!e.isDirectory()) continue;
+      if (e.name === slug) return path.join(dir, e.name);
+      const found = search(path.join(dir, e.name));
+      if (found) return found;
+    }
+    return null;
   }
 
+  return search(root);
+}
+
+// Make the on-disk folder tree match the current sections/nodes.
+//
+// Sections nest: a section whose box is fully inside another section's box
+// becomes a subfolder of that section's folder. The algorithm:
+//   1. Compute the expected absolute path for every section folder.
+//   2. Sort sections shallowest-first so a parent folder exists before its
+//      children are placed inside it (and a renamed parent drags children along
+//      when its folder is renamed with fs.renameSync).
+//   3. Move or create each section folder.
+//   4. Move each node file into its target folder.
+//   5. Remove stale folders (relocating any loose files back to the board root).
+function reconcileSections(boardId, layout) {
+  const root = boardDir(boardId);
+  const sections = sectionsOf(layout);
+  const pathMap = buildSectionPaths(boardId, layout);
+
+  // Sort by expected path depth (fewer segments = shallower = process first).
+  const rootDepth = root.split(path.sep).length;
+  const pathDepth = (s) => pathMap.get(s.id).split(path.sep).length - rootDepth;
+  const sorted = [...sections].sort((a, b) => pathDepth(a) - pathDepth(b));
+
+  // Phase 1: move or create each section's folder.
+  for (const s of sorted) {
+    const expected = pathMap.get(s.id);
+    const current = findSectionDir(boardId, sectionSlug(s));
+    if (current) {
+      if (path.resolve(current) !== path.resolve(expected)) {
+        try {
+          fs.mkdirSync(path.dirname(expected), { recursive: true });
+          fs.renameSync(current, expected);
+        } catch (_) {}
+      }
+    } else {
+      try {
+        fs.mkdirSync(expected, { recursive: true });
+      } catch (_) {}
+    }
+  }
+
+  // Phase 2: move each node file to its target folder.
   for (const node of layout.nodes) {
     const stem = nodeStem(node);
-    const target = path.join(targetDirForNode(boardId, layout, node), stem + ".md");
+    const target = path.join(targetDirForNode(boardId, layout, node, pathMap), stem + ".md");
     const current = findNodeFile(boardId, stem);
     if (current && path.resolve(current) !== path.resolve(target)) {
       try {
@@ -206,27 +307,44 @@ function reconcileSections(boardId, layout) {
     }
   }
 
-  const valid = new Set(sectionsOf(layout).map(sectionSlug));
-  let entries = [];
-  try {
-    entries = fs.readdirSync(root, { withFileTypes: true });
-  } catch (_) {}
-  for (const d of entries) {
-    if (!d.isDirectory() || valid.has(d.name)) continue;
-    const dir = path.join(root, d.name);
-    let files = [];
+  // Phase 3: remove stale folders (directories whose name is not a valid
+  // section slug). Loose files are relocated to the board root first; then
+  // fs.rmdirSync removes the directory only when it is empty (silently
+  // fails if a valid nested section is still inside — next reconcile cleans up).
+  const validSlugs = new Set(sections.map(sectionSlug));
+
+  function cleanDir(dir) {
+    let entries = [];
     try {
-      files = fs.readdirSync(dir);
-    } catch (_) {}
-    for (const f of files) {
-      try {
-        fs.renameSync(path.join(dir, f), path.join(root, f));
-      } catch (_) {}
+      entries = fs.readdirSync(dir, { withFileTypes: true });
+    } catch (_) {
+      return;
     }
-    try {
-      fs.rmdirSync(dir);
-    } catch (_) {}
+    for (const e of entries) {
+      if (!e.isDirectory()) continue;
+      const sub = path.join(dir, e.name);
+      if (!validSlugs.has(e.name)) {
+        let contents = [];
+        try {
+          contents = fs.readdirSync(sub, { withFileTypes: true });
+        } catch (_) {}
+        for (const f of contents) {
+          if (f.isFile()) {
+            try {
+              fs.renameSync(path.join(sub, f.name), path.join(root, f.name));
+            } catch (_) {}
+          }
+        }
+        try {
+          fs.rmdirSync(sub);
+        } catch (_) {}
+      } else {
+        cleanDir(sub);
+      }
+    }
   }
+
+  cleanDir(root);
 }
 
 function nextSectionId(layout) {

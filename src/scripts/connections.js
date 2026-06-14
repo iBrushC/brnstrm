@@ -10,6 +10,7 @@
 
 import { api } from "./api.js";
 import { screenToWorld } from "./view.js";
+import { inlineEdit } from "./inline-edit.js";
 
 export function createConnectionLayer({
   svg,
@@ -216,38 +217,20 @@ export function createConnectionLayer({
 
   /* ---- label editing ---- */
   function beginEditLabel(conn) {
-    const input = document.createElement("input");
-    input.className = "conn-label-input";
-    input.value = conn.label;
-    // Sit the input exactly where the label is (its own translate(-50%,-50%)
-    // centers it on the arrow midpoint).
-    input.style.left = conn.labelEl.style.left;
-    input.style.top = conn.labelEl.style.top;
-    conn.labelEl.replaceWith(input);
-    input.focus();
-    input.select();
-
-    let done = false;
-    const commit = () => {
-      if (done) return;
-      done = true;
-      const label = input.value.trim();
-      conn.label = label;
-      conn.labelEl.textContent = label || "label";
-      conn.labelEl.classList.toggle("empty", !label);
-      input.replaceWith(conn.labelEl);
-      persist(conn, { label });
-    };
-    input.addEventListener("blur", commit);
-    input.addEventListener("keydown", (e) => {
-      e.stopPropagation();
-      if (e.key === "Enter") input.blur();
-      else if (e.key === "Escape") {
-        input.value = conn.label;
-        input.blur();
-      }
+    inlineEdit(conn.labelEl, {
+      className: "conn-label-input",
+      value: conn.label,
+      // Sit the input exactly where the label is (its own translate(-50%,-50%)
+      // centers it on the arrow midpoint).
+      style: { left: conn.labelEl.style.left, top: conn.labelEl.style.top },
+      onCommit: (label, input) => {
+        conn.label = label;
+        conn.labelEl.textContent = label || "label";
+        conn.labelEl.classList.toggle("empty", !label);
+        input.replaceWith(conn.labelEl);
+        persist(conn, { label });
+      },
     });
-    input.addEventListener("mousedown", (e) => e.stopPropagation());
   }
 
   async function persist(conn, patch) {

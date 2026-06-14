@@ -1,6 +1,7 @@
 // Sidebar board list: switch, create, right-click-to-rename, and × to delete (with undo toast).
 
 import { api } from "./api.js";
+import { inlineEdit } from "./inline-edit.js";
 
 let toastEl = null;
 let toastTimer = null;
@@ -84,36 +85,24 @@ export function createBoardBar({ listEl, addBtn, onSwitch }) {
     onSwitch(id);
   }
 
-  // Swap the name span for an inline input.
+  // Swap the name span for an inline input. The board list isn't inside the
+  // canvas, so its keypresses don't need to stop propagating; commit re-renders
+  // the whole list rather than swapping the span back in.
   function beginRename(b, nameSpan) {
-    const input = document.createElement("input");
-    input.className = "board-rename";
-    input.value = b.name;
-    nameSpan.replaceWith(input);
-    input.focus();
-    input.select();
-
-    let done = false;
-    const commit = async () => {
-      if (done) return;
-      done = true;
-      const name = input.value.trim() || b.name;
-      try {
-        const updated = await api.renameBoard(b.id, name);
-        b.name = updated.name;
-      } catch (err) {
-        console.error(err);
-      }
-      render();
-    };
-
-    input.addEventListener("blur", commit);
-    input.addEventListener("keydown", (e) => {
-      if (e.key === "Enter") input.blur();
-      else if (e.key === "Escape") {
-        input.value = b.name;
-        input.blur();
-      }
+    inlineEdit(nameSpan, {
+      className: "board-rename",
+      value: b.name,
+      stopProp: false,
+      onCommit: async (raw) => {
+        const name = raw || b.name;
+        try {
+          const updated = await api.renameBoard(b.id, name);
+          b.name = updated.name;
+        } catch (err) {
+          console.error(err);
+        }
+        render();
+      },
     });
   }
 
