@@ -9,6 +9,7 @@ import { createConnectionLayer } from "./connections.js";
 import { createBoardBar } from "./boards.js";
 import { createHistory } from "./history.js";
 import { createRadialMenu } from "./radial.js";
+import { createExporter } from "./llm-export.js";
 import { toast } from "./toast.js";
 
 /* ---------------- Theme ---------------- */
@@ -61,6 +62,7 @@ const nodeLayerEl = document.getElementById("node-layer");
 let nodeLayer; // set during init
 let sections; // set during init
 let connections; // set during init
+let exporter; // set during init (LLM export of board/section/note)
 
 // Single change hook shared by node/section edits: keep the minimap fresh and
 // re-route arrows so they track the nodes they connect.
@@ -484,6 +486,7 @@ nodeLayer = createNodeLayer({
   isLocked: () => connections && connections.isConnecting(),
   onNodeClick: (node) => connections && connections.startDragFrom(node),
   onDelete: (nodeId) => connections && connections.removeForNode(nodeId),
+  onExport: (node) => exporter && exporter.exportNote(node),
   onGroupDragStart: () => sections && sections.captureGroupOrigins(),
   onGroupDragMove: (dx, dy) => sections && sections.applyGroupOffset(dx, dy),
   onGroupDragEnd: () => sections && sections.commitGroupMove(),
@@ -503,6 +506,7 @@ sections = createSectionLayer({
   onSectionDragEnd: () => nodeLayer && nodeLayer.commitContainedMove(),
   // Deleting a section drops the arrows that linked it (UI side; server prunes too).
   onDelete: (sectionId) => connections && connections.removeForSection(sectionId),
+  onExport: (section) => exporter && exporter.exportSection(section),
 });
 
 connections = createConnectionLayer({
@@ -516,6 +520,21 @@ connections = createConnectionLayer({
   onChange: drawMinimap,
   history,
 });
+
+/* ---------------- LLM export ---------------- */
+// Pulls live data straight from the layers so an export reflects the current
+// canvas. The board button lives in the top-right of the canvas; per-note and
+// per-section buttons are wired via each layer's onExport above.
+exporter = createExporter({
+  getNodes: () => nodeLayer.getExportNodes(),
+  getSections: () => sections.getExportSections(),
+  getConnections: () => connections.getExportConnections(),
+  getBoardName: () => boards.currentName(),
+});
+
+const exportBoardBtn = document.getElementById("export-board");
+exportBoardBtn.addEventListener("mousedown", (e) => e.stopPropagation());
+exportBoardBtn.addEventListener("click", () => exporter.exportBoard());
 
 /* ---------------- File drop → resource + node ---------------- */
 // Dragging files onto the canvas uploads each to the board's resources folder

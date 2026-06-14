@@ -9,6 +9,10 @@ export function createBoardBar({ listEl, addBtn, onSwitch }) {
   let currentId = null;
 
   const current = () => currentId;
+  const currentName = () => {
+    const b = boards.find((board) => board.id === currentId);
+    return b ? b.name : "";
+  };
 
   async function load() {
     boards = await api.listBoards();
@@ -141,5 +145,5 @@ export function createBoardBar({ listEl, addBtn, onSwitch }) {
 
   addBtn.addEventListener("click", addBoard);
 
-  return { load, current };
+  return { load, current, currentName };
 }

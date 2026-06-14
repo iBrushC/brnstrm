@@ -27,6 +27,7 @@ export function createNodeLayer({
   history,
   onNodeClick,
   onDelete,
+  onExport,
   isLocked,
   onGroupDragStart,
   onGroupDragMove,
@@ -120,7 +121,14 @@ export function createNodeLayer({
     deleteBtn.textContent = "×";
     deleteBtn.title = "Delete node";
 
-    el.append(bar, md.toolbar, md.editor, handle, deleteBtn);
+    // Export button — floats just outside the top-right corner on hover and
+    // copies this note as an LLM-ready prompt (see llm-export.js).
+    const exportBtn = document.createElement("button");
+    exportBtn.className = "node-export";
+    exportBtn.textContent = "⧉ to agent";
+    exportBtn.title = "Copy this note as an LLM prompt";
+
+    el.append(bar, md.toolbar, md.editor, handle, deleteBtn, exportBtn);
     viewport.appendChild(el);
 
     node = {
@@ -164,6 +172,8 @@ export function createNodeLayer({
     handle.addEventListener("mousedown", (e) => startResize(e, node));
     deleteBtn.addEventListener("mousedown", (e) => e.stopPropagation());
     deleteBtn.addEventListener("click", (e) => { e.stopPropagation(); deleteNode(node); });
+    exportBtn.addEventListener("mousedown", (e) => e.stopPropagation());
+    exportBtn.addEventListener("click", (e) => { e.stopPropagation(); if (onExport) onExport(node); });
 
     return node;
   }
@@ -394,6 +404,19 @@ export function createNodeLayer({
     return nodes.map((n) => ({ x: n.x, y: n.y, w: n.w, h: n.h }));
   }
 
+  // Full node data for the LLM exporter (geometry + name + raw content).
+  function getExportNodes() {
+    return nodes.map((n) => ({
+      id: n.id,
+      name: n.name,
+      x: n.x,
+      y: n.y,
+      w: n.w,
+      h: n.h,
+      content: n.content,
+    }));
+  }
+
   // Live geometry of a single node by id (used by arrows to find endpoints).
   function getNodeRect(id) {
     const n = nodes.find((n) => n.id === id);
@@ -407,6 +430,7 @@ export function createNodeLayer({
     createNodeAt,
     deleteSelected,
     getRects,
+    getExportNodes,
     getNodeRect,
     selectInRect: sel.selectInRect,
     clearGroupSel: sel.clearGroup,

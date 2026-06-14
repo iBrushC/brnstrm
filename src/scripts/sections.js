@@ -16,7 +16,7 @@ import { createDragSet } from "./drag-set.js";
 const MIN_SIZE = 24; // world px — drags smaller than this are treated as a miss
 const DEFAULT_LABEL = "section";
 
-export function createSectionLayer({ layer, canvas, getBoardId, onChange, history, onDelete, onGroupDragStart, onGroupDragMove, onGroupDragEnd, onSectionDragStart, onSectionDragMove, onSectionDragEnd }) {
+export function createSectionLayer({ layer, canvas, getBoardId, onChange, history, onDelete, onExport, onGroupDragStart, onGroupDragMove, onGroupDragEnd, onSectionDragStart, onSectionDragMove, onSectionDragEnd }) {
   let sections = []; // { id, x, y, w, h, label, el, labelEl }
   let drawing = false;
   let drawState = null;
@@ -85,8 +85,15 @@ export function createSectionLayer({ layer, canvas, getBoardId, onChange, histor
     handle.className = "section-resize";
     handle.title = "Drag to resize";
 
+    // Export button — floats just outside the top-right corner on hover and
+    // copies this section (its notes + nested sections) as an LLM-ready prompt.
+    const exportBtn = document.createElement("button");
+    exportBtn.className = "section-export";
+    exportBtn.textContent = "⧉ to agent";
+    exportBtn.title = "Copy this section as an LLM prompt";
+
     bar.append(labelEl, del);
-    el.append(bar, handle);
+    el.append(bar, handle, exportBtn);
     layer.appendChild(el);
 
     const section = {
@@ -119,6 +126,11 @@ export function createSectionLayer({ layer, canvas, getBoardId, onChange, histor
     del.addEventListener("click", (e) => {
       e.stopPropagation();
       deleteSection(section);
+    });
+    exportBtn.addEventListener("mousedown", (e) => e.stopPropagation());
+    exportBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      if (onExport) onExport(section);
     });
     // Rename on right-click, consistent with renaming a board.
     labelEl.addEventListener("contextmenu", (e) => {
@@ -381,6 +393,18 @@ export function createSectionLayer({ layer, canvas, getBoardId, onChange, histor
     return sections.map((s) => ({ x: s.x, y: s.y, w: s.w, h: s.h }));
   }
 
+  // Full section data for the LLM exporter (geometry + label).
+  function getExportSections() {
+    return sections.map((s) => ({
+      id: s.id,
+      x: s.x,
+      y: s.y,
+      w: s.w,
+      h: s.h,
+      label: s.label,
+    }));
+  }
+
   // Live world rect for one section (used by the connection layer to route
   // section arrows). Null if the section no longer exists.
   function getSectionRect(id) {
@@ -408,6 +432,7 @@ export function createSectionLayer({ layer, canvas, getBoardId, onChange, histor
     cancelDraw,
     deleteSelected,
     getRects,
+    getExportSections,
     getSectionRect,
     sectionAtWorld,
     isDrawing: () => drawing,

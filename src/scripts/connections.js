@@ -477,10 +477,22 @@ export function createConnectionLayer({
     }
   }
 
+  // Full connection data for the LLM exporter (endpoints + kind + label).
+  function getExportConnections() {
+    return conns.map((c) => ({
+      id: c.id,
+      from: c.from,
+      to: c.to,
+      kind: c.kind,
+      label: c.label,
+    }));
+  }
+
   return {
     load,
     clear,
     redraw,
+    getExportConnections,
     deleteSelected,
     removeForNode,
     removeForSection,

@@ -529,7 +529,10 @@ body.connecting #canvas * {
   position: absolute;
   display: flex;
   flex-direction: column;
-  overflow: hidden;
+  /* `visible` (not `hidden`) so the hover export button can float just outside
+     the top-right corner; the body (.node-md) clips its own content, and the
+     title bar rounds its own top corners, so nothing else overflows. */
+  overflow: visible;
   background: var(--panel);
   border: 1px solid var(--border);
   border-radius: 6px;
@@ -550,6 +553,8 @@ body.connecting #canvas * {
   color: var(--text-dim);
   background: var(--bg);
   border-bottom: 1px solid var(--border);
+  /* Match the node's rounded top now that the node itself no longer clips. */
+  border-radius: 6px 6px 0 0;
   cursor: grab;
   user-select: none;
   white-space: nowrap;
@@ -847,6 +852,55 @@ body.connecting #canvas * {
   color: var(--accent);
 }
 
+/* ---- Export buttons (note + section) ---- */
+/* Float flush against the outside of the top-right corner. Kept pointer-events
+   auto even while hidden so the spot acts as a hover sensor (same trick the
+   resize grips use) — needed for sections, whose body is click-through. */
+.node-export,
+.section-export {
+  position: absolute;
+  top: 0;
+  right: 0;
+  transform: translateY(-100%);
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-family: inherit;
+  font-size: 11px;
+  line-height: 1;
+  color: var(--text-dim);
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  padding: 3px 7px;
+  cursor: pointer;
+  pointer-events: auto;
+  opacity: 0;
+  transition: opacity 0.12s ease, color 0.12s ease, border-color 0.12s ease;
+}
+
+/* A node has a solid, hoverable body, so its button needn't act as a sensor —
+   keep it click-through while hidden to avoid a phantom hit-target above the
+   node, and enable it only once the node is hovered/selected. */
+.node-export {
+  pointer-events: none;
+}
+
+.node:hover .node-export,
+.node.selected .node-export,
+.section:hover .section-export,
+.section.selected .section-export {
+  opacity: 0.85;
+  pointer-events: auto;
+}
+
+.node-export:hover,
+.section-export:hover {
+  opacity: 1;
+  color: var(--text);
+  border-color: var(--accent);
+}
+
 /* ---- HUD (minimap + controls) ---- */
 #hud {
   position: absolute;
@@ -913,11 +967,35 @@ kbd {
   padding: 0 4px;
 }
 
+/* ---- Board export (top-right of canvas) ---- */
+#export-board {
+  position: absolute;
+  top: 12px;
+  right: 14px;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-family: inherit;
+  font-size: 12px;
+  color: var(--text-dim);
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 6px 10px;
+  cursor: pointer;
+  z-index: 10;
+}
+
+#export-board:hover {
+  color: var(--text);
+  border-color: var(--accent);
+}
+
 /* ---- Help guide ---- */
 #help-btn {
   position: absolute;
   top: 12px;
-  right: 14px;
+  left: 14px;
   width: 28px;
   height: 28px;
   display: flex;
@@ -943,7 +1021,7 @@ kbd {
 #help-guide {
   position: absolute;
   top: 50px;
-  right: 14px;
+  left: 14px;
   width: 260px;
   background: var(--panel);
   border: 1px solid var(--border);
