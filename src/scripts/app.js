@@ -499,9 +499,10 @@ const boards = createBoardBar({
   },
 });
 
-/* ---------------- File drop → upload to board resources ---------------- */
-// Dragging files onto the canvas uploads them to the board's resources folder.
-// This is file-side only: no nodes are created. A depth counter keeps the
+/* ---------------- File drop → resource + node ---------------- */
+// Dragging files onto the canvas uploads each to the board's resources folder
+// and drops a node at the cursor whose body is just a "@[file]" reference
+// (which renders as an image preview or a file chip). A depth counter keeps the
 // drop-zone highlight stable as the drag passes over child elements.
 let dragDepth = 0;
 
@@ -557,13 +558,32 @@ canvas.addEventListener("drop", async (e) => {
   const files = Array.from(e.dataTransfer.files || []);
   if (!id || files.length === 0) return;
 
-  const results = await Promise.allSettled(
-    files.map((f) => api.uploadResource(id, f))
-  );
-  const ok = results.filter((r) => r.status === "fulfilled").length;
-  const failed = results.length - ok;
+  // Anchor the first node at the drop point; stack the rest down-right so a
+  // multi-file drop doesn't pile every node on the same spot.
+  const r = canvas.getBoundingClientRect();
+  const drop = screenToWorld(e.clientX - r.left, e.clientY - r.top);
 
-  let msg = ok === 1 ? "Uploaded 1 file" : "Uploaded " + ok + " files";
+  let ok = 0;
+  let failed = 0;
+  let i = 0;
+  for (const f of files) {
+    try {
+      // Use the saved name (the server de-dupes), so the "@[name]" reference
+      // always matches the file actually on disk.
+      const saved = await api.uploadResource(id, f);
+      const offset = i * 28;
+      await nodeLayer.createNodeAt(drop.x + offset, drop.y + offset, {
+        content: "@[" + saved.name + "]",
+      });
+      ok++;
+    } catch (err) {
+      console.error(err);
+      failed++;
+    }
+    i++;
+  }
+
+  let msg = ok === 1 ? "Added 1 file" : "Added " + ok + " files";
   if (failed) msg += " · " + failed + " failed";
   showInfoToast(msg);
 });

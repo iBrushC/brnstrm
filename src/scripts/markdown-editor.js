@@ -14,17 +14,56 @@
 // top-level <div>, reading and caret math stay simple and predictable.
 //
 // Supported: H1–H4, bold/italic, blockquotes, bullet/numbered lists, links,
-// fenced code blocks (no highlighting), inline code, and inline images (the
-// markers stay dimmed and an image preview is rendered alongside).
+// fenced code blocks (no highlighting), inline code, inline images (the markers
+// stay dimmed and an image preview is rendered alongside), and `@[file]`
+// resource references — typing `@` opens a picker of the board's uploaded
+// files; the chosen file renders as an image preview (for images) or a small
+// clickable chip showing the file's name and type (for everything else). An
+// `@[photo.png]` image ref and a markdown `![](photo.png)` are interchangeable:
+// both resolve the bare name to the served resource URL and render the image.
 
 const BLOCK_TAGS = /^(DIV|P|LI|BLOCKQUOTE|H[1-6]|UL|OL|PRE)$/;
 
 // Inline tokens, tried left-to-right at each position. Order matters: image
-// before link (image starts with "!"), bold before italic (so "**" wins).
+// before link (image starts with "!"), bold before italic (so "**" wins). The
+// `@[name]` resource ref (group 7) only matches at a "@", so it can't collide.
 const INLINE =
-  /(!\[[^\]]*\]\([^)]*\))|(\[[^\]]*\]\([^)]*\))|(`[^`]+`)|(\*\*[^*]+?\*\*)|(\*[^*\n]+?\*)|(_[^_\n]+?_)/g;
+  /(!\[[^\]]*\]\([^)]*\))|(\[[^\]]*\]\([^)]*\))|(`[^`]+`)|(\*\*[^*]+?\*\*)|(\*[^*\n]+?\*)|(_[^_\n]+?_)|(@\[[^\]\n]+\])/g;
 
-export function createMarkdownEditor({ value = "", onInput } = {}) {
+// Extensions rendered as an inline image preview (everything else is a chip).
+const IMAGE_EXT = /\.(png|jpe?g|gif|webp|svg|bmp|ico|avif)$/i;
+function isImageName(name) {
+  return IMAGE_EXT.test(String(name || ""));
+}
+
+// Emoji icon for a file chip, keyed by extension.
+function fileIcon(ext) {
+  const e = String(ext || "").toLowerCase();
+  if (/^(pdf)$/.test(e)) return "📕";
+  if (/^(doc|docx|rtf|odt)$/.test(e)) return "📝";
+  if (/^(xls|xlsx|csv|ods)$/.test(e)) return "📊";
+  if (/^(ppt|pptx|odp)$/.test(e)) return "📑";
+  if (/^(zip|rar|7z|tar|gz)$/.test(e)) return "🗜️";
+  if (/^(mp4|mov|webm|mkv|avi)$/.test(e)) return "🎬";
+  if (/^(mp3|wav|ogg|flac|m4a)$/.test(e)) return "🎵";
+  if (/^(txt|md|json|log)$/.test(e)) return "📄";
+  return "📎";
+}
+
+// The resolver turning a bare resource name into a fetchable URL. Set at the top
+// of every renderInto() call (rendering is synchronous, so a single shared slot
+// is safe even with multiple editor instances on the page).
+let activeResolve = (name) => name;
+
+// Options:
+//   getResources()        -> Promise<[{ name, size }]>  files to offer after "@"
+//   resolveResourceUrl(n) -> string                     bare name -> fetch URL
+export function createMarkdownEditor({
+  value = "",
+  onInput,
+  getResources,
+  resolveResourceUrl,
+} = {}) {
   const editor = document.createElement("div");
   editor.className = "node-text node-md";
   editor.contentEditable = "true";
@@ -37,13 +76,23 @@ export function createMarkdownEditor({ value = "", onInput } = {}) {
   const imgBtn = toolbarButton("🖼", "Insert inline image");
   toolbar.append(linkBtn, imgBtn);
 
+  const resolveUrl =
+    typeof resolveResourceUrl === "function" ? resolveResourceUrl : (n) => n;
+
   let currentValue = value;
   let composing = false; // suppress re-render mid-IME-composition
+
+  // Render through here (not renderInto directly) so this editor's resource
+  // resolver is installed before the synchronous render reads it.
+  function render(v) {
+    activeResolve = resolveUrl;
+    renderInto(editor, v);
+  }
 
   /* ---- public surface ---- */
   function setValue(v) {
     currentValue = v;
-    renderInto(editor, v);
+    render(v);
   }
   function getValue() {
     return currentValue;
@@ -56,11 +105,134 @@ export function createMarkdownEditor({ value = "", onInput } = {}) {
     const { value: v, caret } = analyze(editor);
     currentValue = v;
     const scroll = editor.scrollTop;
-    renderInto(editor, v);
+    render(v);
     editor.scrollTop = scroll;
     placeCaret(editor, v, caret);
     if (onInput) onInput(v);
+    updateMention(v, caret);
   }
+
+  /* ---- "@" resource picker ---- */
+  // Typing "@foo" (no brackets yet) opens a dropdown of matching board files;
+  // choosing one replaces the "@foo" query with a "@[name]" token. The menu
+  // lives on document.body so the node's overflow can't clip it.
+  let mentionMenu = null; // DOM element while open, else null
+  let mentionItems = []; // filtered [{ name, size }]
+  let mentionActive = 0; // highlighted row index
+  let mentionStart = -1; // caret index of the triggering "@"
+  let resourceCache = null; // file list for the current open session
+
+  // A trailing "@" + query (anything but newline, another "@", brackets, or a
+  // path separator — those mean it isn't a bare reference being typed).
+  const MENTION_RE = /@([^\n@[\]\\/]*)$/;
+
+  async function ensureResources() {
+    if (resourceCache) return resourceCache;
+    try {
+      resourceCache = (getResources ? await getResources() : []) || [];
+    } catch (_) {
+      resourceCache = [];
+    }
+    return resourceCache;
+  }
+
+  async function updateMention(value, caret) {
+    const m = MENTION_RE.exec(value.slice(0, caret));
+    if (!m) return closeMention();
+    mentionStart = caret - m[0].length;
+    const query = m[1].toLowerCase();
+    const all = await ensureResources();
+    mentionItems = all
+      .filter((r) => r.name.toLowerCase().includes(query))
+      .slice(0, 8);
+    if (!mentionItems.length) return closeMention();
+    if (mentionActive >= mentionItems.length) mentionActive = 0;
+    openMention();
+  }
+
+  function openMention() {
+    if (!mentionMenu) {
+      mentionMenu = document.createElement("div");
+      mentionMenu.className = "mention-menu";
+      document.body.appendChild(mentionMenu);
+    }
+    mentionMenu.innerHTML = "";
+    mentionItems.forEach((it, i) => {
+      const row = document.createElement("div");
+      row.className = "mention-item" + (i === mentionActive ? " active" : "");
+      const ext = (it.name.split(".").pop() || "").toLowerCase();
+      const ic = span("mention-icon", fileIcon(ext));
+      const nm = span("mention-name", it.name);
+      row.append(ic, nm);
+      // mousedown (not click) + preventDefault keeps the editor focused so the
+      // caret/selection survive to the insertion.
+      row.addEventListener("mousedown", (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        chooseMention(i);
+      });
+      mentionMenu.appendChild(row);
+    });
+    const rect = caretRect(editor);
+    if (rect) {
+      mentionMenu.style.left = Math.round(rect.left) + "px";
+      mentionMenu.style.top = Math.round(rect.bottom + 4) + "px";
+    }
+  }
+
+  function closeMention() {
+    if (mentionMenu) {
+      mentionMenu.remove();
+      mentionMenu = null;
+    }
+    mentionItems = [];
+    mentionActive = 0;
+    mentionStart = -1;
+    resourceCache = null; // refetch next session so new uploads show up
+  }
+
+  function chooseMention(i) {
+    const it = mentionItems[i];
+    if (!it) return;
+    const { value: v, caret } = analyze(editor);
+    const start = mentionStart >= 0 ? mentionStart : caret;
+    const token = "@[" + it.name + "]";
+    const nv = v.slice(0, start) + token + v.slice(caret);
+    currentValue = nv;
+    render(nv);
+    editor.focus();
+    placeCaret(editor, nv, start + token.length);
+    closeMention();
+    if (onInput) onInput(nv);
+  }
+
+  // While the menu is open, the arrow/enter/escape keys drive it instead of the
+  // editor. preventDefault on keydown suppresses the default text action (e.g.
+  // Enter inserting a newline) before it happens.
+  editor.addEventListener("keydown", (e) => {
+    if (!mentionMenu) return;
+    if (e.key === "ArrowDown") {
+      e.preventDefault();
+      mentionActive = (mentionActive + 1) % mentionItems.length;
+      openMention();
+    } else if (e.key === "ArrowUp") {
+      e.preventDefault();
+      mentionActive =
+        (mentionActive - 1 + mentionItems.length) % mentionItems.length;
+      openMention();
+    } else if (e.key === "Enter" || e.key === "Tab") {
+      e.preventDefault();
+      chooseMention(mentionActive);
+    } else if (e.key === "Escape") {
+      e.preventDefault();
+      e.stopPropagation();
+      closeMention();
+    }
+  });
+
+  // Leaving the editor dismisses the menu (a menu-row mousedown preventDefault
+  // keeps focus, so picking a file doesn't trip this).
+  editor.addEventListener("blur", () => closeMention());
 
   editor.addEventListener("input", () => {
     if (!composing) handleInput();
@@ -103,7 +275,7 @@ export function createMarkdownEditor({ value = "", onInput } = {}) {
     const snippet = open + label + close;
     const nv = v.slice(0, start) + snippet + v.slice(end);
     currentValue = nv;
-    renderInto(editor, nv);
+    render(nv);
     editor.focus();
     // "url" sits between the "(" and ")" of `close`.
     const urlStart = start + open.length + label.length + 2; // past "("
@@ -118,7 +290,7 @@ export function createMarkdownEditor({ value = "", onInput } = {}) {
     const { value: v, start, end } = analyze(editor);
     const nv = v.slice(0, start) + text + v.slice(end);
     currentValue = nv;
-    renderInto(editor, nv);
+    render(nv);
     editor.focus();
     placeCaret(editor, nv, start + caretInText);
     if (onInput) onInput(nv);
@@ -210,6 +382,7 @@ function renderInline(parent, text) {
     else if (m[4]) emitWrapped(parent, m[4], 2, "md-bold");
     else if (m[5]) emitWrapped(parent, m[5], 1, "md-italic");
     else if (m[6]) emitWrapped(parent, m[6], 1, "md-italic");
+    else if (m[7]) emitFileRef(parent, m[7]);
 
     pos = INLINE.lastIndex;
   }
@@ -237,6 +410,9 @@ function emitLink(parent, token) {
 }
 
 // `![alt](url)` → dim the markers (kept verbatim) and render a live preview.
+// A bare url (no scheme and no leading "/") is treated as a resource name and
+// resolved to its served URL, so `![](photo.png)` and `@[photo.png]` render the
+// same image.
 function emitImage(parent, token) {
   const m = /^!\[([^\]]*)\]\(([^)]*)\)$/.exec(token);
   const alt = m[1];
@@ -246,16 +422,82 @@ function emitImage(parent, token) {
     span(null, alt),
     markSpan("](" + url + ")")
   );
-  if (url) {
-    const img = document.createElement("img");
-    img.className = "md-img";
-    img.src = url;
-    img.alt = alt;
-    img.contentEditable = "false";
-    img.draggable = false;
-    img.addEventListener("error", () => img.classList.add("md-img-broken"));
-    parent.appendChild(img);
+  if (url) parent.appendChild(imagePreview(resolveMaybeResource(url), alt));
+}
+
+// `@[name]` → dim the markers (the literal source) and render a preview: an
+// image for image files, otherwise a clickable chip naming the file + its type.
+function emitFileRef(parent, token) {
+  const name = token.slice(2, -1); // strip "@[" … "]"
+  parent.append(markSpan("@["), span(null, name), markSpan("]"));
+  const url = activeResolve(name);
+  if (isImageName(name)) parent.appendChild(imagePreview(url, name));
+  else parent.appendChild(fileChip(name, url));
+}
+
+// A url is a resource name when it carries no scheme ("http:", "data:") and is
+// not an absolute path ("/…"); those resolve through the active resolver.
+function resolveMaybeResource(url) {
+  if (!url || /^[a-z][a-z0-9+.-]*:/i.test(url) || url.startsWith("/")) return url;
+  return activeResolve(url);
+}
+
+// Shared <img> preview for image refs (markdown or "@"). Clicking opens the
+// full file in a new tab; broken sources collapse (.md-img-broken).
+function imagePreview(url, alt) {
+  const img = document.createElement("img");
+  img.className = "md-img";
+  img.src = url;
+  img.alt = alt;
+  img.contentEditable = "false";
+  img.draggable = false;
+  img.addEventListener("error", () => img.classList.add("md-img-broken"));
+  img.addEventListener("mousedown", (e) => e.preventDefault());
+  img.addEventListener("click", (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (url) window.open(url, "_blank");
+  });
+  return img;
+}
+
+// Inline chip for a non-image resource: icon + name + type tag. Excluded from
+// the serialized markdown (data-skip) since the "@[name]" markers already carry
+// the source text. Clicking opens the file in a new tab.
+function fileChip(name, url) {
+  const chip = document.createElement("span");
+  chip.className = "md-file-chip";
+  chip.contentEditable = "false";
+  chip.dataset.skip = "";
+  chip.title = name;
+  const ext = (name.split(".").pop() || "").toLowerCase();
+  chip.append(
+    span("md-file-icon", fileIcon(ext)),
+    span("md-file-name", name),
+    span("md-file-type", ext ? ext.toUpperCase() : "FILE")
+  );
+  chip.addEventListener("mousedown", (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+  });
+  chip.addEventListener("click", (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (url) window.open(url, "_blank");
+  });
+  return chip;
+}
+
+// Screen rect of the current caret, used to anchor the "@" picker. A collapsed
+// range still reports a usable top/left in Chromium (the app's runtime).
+function caretRect(root) {
+  const sel = window.getSelection();
+  if (!sel || !sel.rangeCount || !root.contains(sel.anchorNode)) return null;
+  const rect = sel.getRangeAt(0).getBoundingClientRect();
+  if (!rect || (!rect.width && !rect.height && !rect.left && !rect.top)) {
+    return root.getBoundingClientRect();
   }
+  return rect;
 }
 
 function span(cls, text) {
@@ -267,6 +509,15 @@ function span(cls, text) {
 
 function markSpan(text) {
   return span("md-mark", text);
+}
+
+// Preview-only nodes carry no markdown source text and are skipped by the
+// serializers: inline image previews (<img>) and file chips (data-skip).
+function isPreview(node) {
+  return (
+    node.nodeName === "IMG" ||
+    (node.nodeType === 1 && node.dataset && "skip" in node.dataset)
+  );
 }
 
 // Append plain text; an empty line still needs a <br> to hold its height.
@@ -289,8 +540,8 @@ function readValue(root) {
         out += child.nodeValue;
       } else if (child.nodeName === "BR") {
         out += "\n";
-      } else if (child.nodeName === "IMG") {
-        // no text contribution
+      } else if (isPreview(child)) {
+        // preview-only (image / file chip) — contributes no source text
       } else {
         const block = BLOCK_TAGS.test(child.nodeName);
         if (block && out.length && !out.endsWith("\n")) out += "\n";
@@ -321,8 +572,8 @@ function indexInValue(root, node, offset) {
         out += child.nodeValue;
       } else if (child.nodeName === "BR") {
         out += "\n";
-      } else if (child.nodeName === "IMG") {
-        // nothing
+      } else if (isPreview(child)) {
+        // preview-only (image / file chip) — contributes no source text
       } else {
         const block = BLOCK_TAGS.test(child.nodeName);
         if (block && out.length && !out.endsWith("\n")) out += "\n";

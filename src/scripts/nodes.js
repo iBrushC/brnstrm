@@ -93,6 +93,15 @@ export function createNodeLayer({
         clearTimeout(persistTimer);
         persistTimer = setTimeout(() => persist(node, { content: value }), 400);
       },
+      // "@" picker source + image/chip URL resolver, both scoped to the board.
+      getResources: () => {
+        const id = getBoardId();
+        return id ? api.listResources(id) : Promise.resolve([]);
+      },
+      resolveResourceUrl: (name) => {
+        const id = getBoardId();
+        return id ? api.resourceUrl(id, name) : name;
+      },
     });
 
     const handle = document.createElement("div");
@@ -323,6 +332,30 @@ export function createNodeLayer({
     }
   }
 
+  // Create a node at a world point with preset content/size (no rename prompt).
+  // Used for file drops, which seed the body with a "@[file]" reference.
+  async function createNodeAt(wx, wy, { content = "", name = "", w, h } = {}) {
+    const id = getBoardId();
+    if (!id) return null;
+    try {
+      const node = await api.createNode(id, {
+        x: Math.round(wx),
+        y: Math.round(wy),
+        content,
+        name,
+        ...(w ? { w } : {}),
+        ...(h ? { h } : {}),
+      });
+      const created = addNodeEl(node);
+      select(created);
+      onChange();
+      return created;
+    } catch (err) {
+      console.error(err);
+      return null;
+    }
+  }
+
   /* ---- deletion (with undo) ---- */
   function removeNode(node) {
     node.el.remove();
@@ -389,6 +422,7 @@ export function createNodeLayer({
     load,
     clear,
     spawnAtWorld,
+    createNodeAt,
     deleteSelected,
     getRects,
     getNodeRect,

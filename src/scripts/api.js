@@ -38,6 +38,10 @@ export const api = {
   // Upload a dragged-in File to the board's resources folder. Raw bytes in the
   // body; the filename rides in a header so it survives unicode/spaces.
   listResources: (id) => req("GET", board(id) + "/resources"),
+  // Stable URL the browser can use to fetch a stored resource (image <img> src,
+  // or open-in-new-tab for other file types).
+  resourceUrl: (id, name) =>
+    board(id) + "/resources/" + encodeURIComponent(name),
   uploadResource: async (id, file) => {
     const res = await fetch(board(id) + "/resources", {
       method: "POST",

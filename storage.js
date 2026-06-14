@@ -28,6 +28,12 @@ const path = require("path");
 // Global storage root. Override with BRNSTRM_DATA to mirror elsewhere.
 const STORAGE = process.env.BRNSTRM_DATA || path.join(__dirname, "data");
 
+// Board-root subfolders that are NOT sections and must be left untouched by
+// section reconciliation. Uploaded files live in `resources/`; without this
+// guard cleanDir() would treat that folder as a stale section, scatter its
+// files into the board root, and delete it on the next node edit.
+const RESERVED_DIRS = new Set(["resources"]);
+
 function initStorage() {
   fs.mkdirSync(STORAGE, { recursive: true });
 }
@@ -322,6 +328,9 @@ function reconcileSections(boardId, layout) {
     }
     for (const e of entries) {
       if (!e.isDirectory()) continue;
+      // resources/ (and any other reserved folder) is not a section — never
+      // relocate its files or remove it.
+      if (RESERVED_DIRS.has(e.name)) continue;
       const sub = path.join(dir, e.name);
       if (!validSlugs.has(e.name)) {
         let contents = [];
@@ -575,7 +584,9 @@ function createSection(id, data) {
   }
   const label =
     typeof data.label === "string" && data.label.trim() ? data.label : "section";
-  const taken = new Set(sectionsOf(layout).map(sectionSlug));
+  // Reserve folder names (resources/) so a section can't claim them and get
+  // entangled with uploaded files on disk.
+  const taken = new Set([...sectionsOf(layout).map(sectionSlug), ...RESERVED_DIRS]);
   const section = {
     id: sectionId,
     x: Math.round(data.x || 0),
@@ -603,9 +614,10 @@ function updateSection(id, sectionId, patch) {
   // and carries the contained node files across.
   if (typeof patch.label === "string") {
     section.label = patch.label;
-    const taken = new Set(
-      sectionsOf(layout).filter((s) => s.id !== sectionId).map(sectionSlug)
-    );
+    const taken = new Set([
+      ...sectionsOf(layout).filter((s) => s.id !== sectionId).map(sectionSlug),
+      ...RESERVED_DIRS,
+    ]);
     section.slug = uniqueSlug(slugify(section.label, section.id), taken);
   }
   writeLayout(id, layout);
@@ -681,6 +693,44 @@ function saveResource(id, filename, buffer) {
   const name = uniqueFilename(dir, safeFilename(filename));
   fs.writeFileSync(path.join(dir, name), buffer);
   return { name, size: buffer.length };
+}
+
+// Content types for serving stored resources back to the browser. Images need
+// a correct type so <img src> renders them; everything else falls back to a
+// generic binary type (the client opens those in a new tab).
+const RESOURCE_MIME = {
+  ".png": "image/png",
+  ".jpg": "image/jpeg",
+  ".jpeg": "image/jpeg",
+  ".gif": "image/gif",
+  ".webp": "image/webp",
+  ".svg": "image/svg+xml",
+  ".bmp": "image/bmp",
+  ".ico": "image/x-icon",
+  ".avif": "image/avif",
+  ".pdf": "application/pdf",
+  ".txt": "text/plain; charset=utf-8",
+  ".md": "text/markdown; charset=utf-8",
+  ".json": "application/json",
+  ".csv": "text/csv; charset=utf-8",
+  ".mp4": "video/mp4",
+  ".webm": "video/webm",
+  ".mp3": "audio/mpeg",
+  ".wav": "audio/wav",
+};
+
+// Resolve a single resource by name to its on-disk path + content type, or null
+// when the name is unsafe or the file doesn't exist. The name arrives as one URL
+// path segment; reject any that resolves outside the board's resources folder.
+function resolveResource(id, filename) {
+  const dir = resourcesDir(id);
+  const name = safeFilename(filename);
+  const file = path.join(dir, name);
+  if (path.resolve(path.dirname(file)) !== path.resolve(dir)) return null;
+  if (!fs.existsSync(file) || !fs.statSync(file).isFile()) return null;
+  const mime = RESOURCE_MIME[path.extname(name).toLowerCase()] ||
+    "application/octet-stream";
+  return { file, mime };
 }
 
 /* ---------- connection operations ---------- */
@@ -778,6 +828,16 @@ function sendJson(res, status, obj) {
   res.end(JSON.stringify(obj));
 }
 
+// Stream a resource file back with its content type. Read errors collapse to a
+// 404 (the file was resolved just before, so this is rare).
+function sendFile(res, file, mime) {
+  fs.readFile(file, (err, data) => {
+    if (err) return sendJson(res, 404, { error: "not found" });
+    res.writeHead(200, { "Content-Type": mime });
+    res.end(data);
+  });
+}
+
 // Routes (pathname already stripped of query string):
 //   GET    /api/boards
 //   POST   /api/boards                              { name }
@@ -791,6 +851,7 @@ function sendJson(res, status, obj) {
 //   DELETE /api/boards/:id/sections/:sectionId
 //   GET    /api/boards/:id/resources
 //   POST   /api/boards/:id/resources           raw file bytes; name in X-Filename
+//   GET    /api/boards/:id/resources/:name      raw bytes of one resource file
 //   GET    /api/boards/:id/connections
 //   POST   /api/boards/:id/connections             { from, to, label?, kind? }
 //   PATCH  /api/boards/:id/connections/:connId     { label? }
@@ -891,6 +952,18 @@ async function handleApi(req, res, pathname) {
         }
         const buffer = await readRawBody(req);
         return sendJson(res, 201, saveResource(id, filename, buffer));
+      }
+    }
+
+    // /api/boards/:id/resources/:name  — serve one file's bytes
+    if (seg.length === 5 && seg[1] === "boards" && seg[3] === "resources") {
+      const id = seg[2];
+      if (!safeSeg(id) || !fs.existsSync(boardDir(id)))
+        return sendJson(res, 404, { error: "board not found" });
+      if (method === "GET") {
+        const hit = resolveResource(id, seg[4]);
+        if (!hit) return sendJson(res, 404, { error: "resource not found" });
+        return sendFile(res, hit.file, hit.mime);
       }
     }
 
