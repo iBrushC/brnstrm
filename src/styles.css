@@ -241,27 +241,47 @@ body {
   z-index: 9999;
 }
 
+/* File drag-over: highlight the canvas as a drop zone with a centered prompt. */
+#canvas.drag-over::after {
+  content: "Drop files to add to this board";
+  position: absolute;
+  inset: 8px;
+  z-index: 9998;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+  border: 2px dashed var(--accent);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+  color: var(--accent);
+  font-size: 15px;
+  font-weight: 500;
+}
+
 /* Drawing a section: crosshair over the whole canvas. */
 #canvas.drawing-section,
 #canvas.drawing-section * {
   cursor: crosshair;
 }
 
-/* Connecting an arrow: crosshair everywhere; highlight the chosen source node. */
+/* Connecting an arrow: crosshair everywhere; highlight the chosen source. */
 body.connecting,
 body.connecting #canvas,
 body.connecting #canvas * {
   cursor: crosshair;
 }
 
-/* The node a connection is being dragged from. */
-.node.conn-source {
+/* The node/section a connection is being dragged from. */
+.node.conn-source,
+.section.conn-source {
   outline: 2px dashed var(--accent);
   outline-offset: 3px;
 }
 
-/* The node currently under the cursor — the prospective drop target. */
-.node.conn-target {
+/* The node/section currently under the cursor — the prospective drop target. */
+.node.conn-target,
+.section.conn-target {
   outline: 3px solid var(--accent);
   outline-offset: 3px;
   box-shadow: 0 0 0 6px var(--radial-hi);
@@ -431,6 +451,19 @@ body.connecting #canvas * {
   stroke-width: 3;
 }
 
+/* Section arrows: same behavior, but wider and fainter to suit the large,
+   low-contrast section boxes. `opacity` (vs stroke-opacity) also fades the
+   shared arrowhead marker along with the line. */
+.conn-line-section {
+  stroke-width: 6;
+  opacity: 0.35;
+}
+
+.conn-line-section.selected {
+  stroke-width: 7;
+  opacity: 0.6;
+}
+
 /* Ghost arrow shown while dragging out a new connection. */
 .conn-ghost {
   stroke: var(--accent);
@@ -438,6 +471,11 @@ body.connecting #canvas * {
   stroke-dasharray: 6 5;
   opacity: 0.8;
   pointer-events: none;
+}
+
+.conn-ghost-section {
+  stroke-width: 6;
+  opacity: 0.4;
 }
 
 #conn-labels {
@@ -549,6 +587,129 @@ body.connecting #canvas * {
   font-size: 13px;
   color: var(--text);
   background: transparent;
+}
+
+/* ---- Markdown editor (node body) ---- */
+/* Contenteditable live-preview: marker characters stay in the text but are
+   dimmed (.md-mark); the styled content sits between them. */
+.node-md {
+  white-space: pre-wrap;
+  word-break: break-word;
+  overflow-y: auto;
+  cursor: text;
+  line-height: 1.5;
+}
+
+.node-md:focus {
+  outline: none;
+}
+
+.node-md.is-empty::before {
+  content: attr(data-placeholder);
+  color: var(--text-dim);
+  pointer-events: none;
+}
+
+.md-line {
+  min-height: 1.5em;
+}
+
+/* Dimmed effect markers (**, #, >, [, ](url), backticks, …) */
+.md-mark {
+  opacity: 0.35;
+}
+
+/* Headings */
+.md-h1 {
+  font-size: 1.7em;
+  font-weight: 700;
+}
+.md-h2 {
+  font-size: 1.45em;
+  font-weight: 700;
+}
+.md-h3 {
+  font-size: 1.2em;
+  font-weight: 600;
+}
+.md-h4 {
+  font-size: 1.05em;
+  font-weight: 600;
+}
+
+/* Inline text effects */
+.md-bold {
+  font-weight: 700;
+}
+.md-italic {
+  font-style: italic;
+}
+.md-link {
+  color: var(--accent);
+  text-decoration: underline;
+}
+.md-inline-code {
+  background: var(--bg);
+  border-radius: 3px;
+  padding: 0 3px;
+}
+
+/* Blockquote — left rule, muted text */
+.md-quote {
+  border-left: 3px solid var(--border);
+  padding-left: 8px;
+  color: var(--text-dim);
+}
+
+/* Code blocks (``` fenced) — subtle background spanning the line */
+.md-code {
+  background: var(--bg);
+  border-radius: 3px;
+}
+
+/* Inline image preview rendered alongside its (dimmed) markdown */
+.md-img {
+  display: block;
+  width: 75%;
+  max-width: 750px;
+  margin: 4px 0;
+  border-radius: 4px;
+  user-select: none;
+  align-self: center;
+  justify-self: center;
+}
+.md-img-broken {
+  display: none;
+}
+
+/* Toolbar shown at the top of the body only while the node is selected. */
+.node-md-toolbar {
+  display: none;
+  flex: 0 0 auto;
+  gap: 4px;
+  padding: 4px 6px;
+  border-bottom: 1px solid var(--border);
+}
+
+.node.selected .node-md-toolbar {
+  display: flex;
+}
+
+.node-md-btn {
+  font-family: inherit;
+  font-size: 12px;
+  line-height: 1;
+  color: var(--text-dim);
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 3px 6px;
+  cursor: pointer;
+}
+
+.node-md-btn:hover {
+  color: var(--text);
+  border-color: var(--accent);
 }
 
 /* Bottom-right resize grip — a dot that brightens on hover/selection. */

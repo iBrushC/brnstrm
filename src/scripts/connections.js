@@ -1,12 +1,16 @@
-// Connection layer — straight arrows that link two nodes and carry a relationship
-// label. Picked from the right of the radial menu: enter "connect" mode, click a
-// source node, then a target node. Connections are non-hierarchical and live in
-// their own connections.json (see storage.js), independent of the node tree.
+// Connection layer — straight arrows that link two things and carry a
+// relationship label. One "Arrow" tool handles both flavors: when you press to
+// start, what's under the cursor is resolved hierarchically — a node wins if one
+// is there, otherwise the innermost (smallest) section containing the point. That
+// first press fixes the arrow's `kind` ("node"|"section"); the target must then
+// be the same kind (no node↔section arrows). Section arrows are drawn wider and
+// fainter to suit the larger, lower-contrast section boxes. Node and section ids
+// never collide, so both kinds live together in connections.json (see storage.js).
 //
 // Each connection draws an SVG <line> (with an arrowhead marker) plus an HTML
 // label at the midpoint. Both live inside the (transformed) viewport, so they
 // pan/zoom in world space alongside the nodes. redraw() recomputes endpoints
-// from the live node rects, so arrows follow nodes as they move.
+// from the live node/section rects, so arrows follow what they connect as it moves.
 
 import { api } from "./api.js";
 import { screenToWorld } from "./view.js";
@@ -18,13 +22,19 @@ export function createConnectionLayer({
   canvas,
   getBoardId,
   getNodeRect,
+  getSectionRect,
+  getSectionAt, // (worldX, worldY) -> { id, el } | null  (innermost section)
   onChange,
   history,
 }) {
-  let conns = []; // { id, from, to, label, line, labelEl }
+  let conns = []; // { id, from, to, kind, label, line, labelEl }
   let selected = null;
-  let connecting = false;
-  let drag = null; // { from: {id, el}, ghost, target: {id, el}|null }
+  let connecting = false; // unified connect mode (node or section)
+  let drag = null; // { kind, from: {id, el}, ghost, target: {id, el}|null }
+
+  // Resolve an endpoint's live world rect by the connection's kind.
+  const rectFor = (kind, id) =>
+    kind === "section" ? getSectionRect(id) : getNodeRect(id);
 
   const notify = () => onChange && onChange();
   const SVGNS = "http://www.w3.org/2000/svg";
@@ -61,8 +71,13 @@ export function createConnectionLayer({
   }
 
   function addConnEl(data) {
+    const kind = data.kind === "section" ? "section" : "node";
     const line = document.createElementNS(SVGNS, "line");
-    line.setAttribute("class", "conn-line");
+    // Section arrows carry an extra class for their wider, fainter look.
+    line.setAttribute(
+      "class",
+      kind === "section" ? "conn-line conn-line-section" : "conn-line"
+    );
     line.setAttribute("marker-end", "url(#arrowhead)");
     svg.appendChild(line);
 
@@ -77,6 +92,7 @@ export function createConnectionLayer({
       id: data.id,
       from: data.from,
       to: data.to,
+      kind,
       label: data.label || "",
       line,
       labelEl,
@@ -155,8 +171,8 @@ export function createConnectionLayer({
 
   function redraw() {
     for (const conn of conns) {
-      const fromR = getNodeRect(conn.from);
-      const toR = getNodeRect(conn.to);
+      const fromR = rectFor(conn.kind, conn.from);
+      const toR = rectFor(conn.kind, conn.to);
       if (!fromR || !toR) {
         conn.line.style.display = "none";
         conn.labelEl.style.display = "none";
@@ -166,7 +182,9 @@ export function createConnectionLayer({
       conn.labelEl.style.display = "";
 
       let x1, y1, x2, y2, labelX, labelY;
-      const pairConn = conns.find(c => c.from === conn.to && c.to === conn.from);
+      const pairConn = conns.find(
+        (c) => c.kind === conn.kind && c.from === conn.to && c.to === conn.from
+      );
       if (pairConn) {
         // Shift the center-to-center axis perpendicular by PAIR_OFFSET, then
         // find where that offset axis intersects each node border. This keeps
@@ -254,7 +272,7 @@ export function createConnectionLayer({
 
   function deleteConn(conn) {
     const boardId = getBoardId();
-    const snapshot = { id: conn.id, from: conn.from, to: conn.to, label: conn.label };
+    const snapshot = { id: conn.id, from: conn.from, to: conn.to, kind: conn.kind, label: conn.label };
     removeConn(conn);
     if (boardId) api.deleteConnection(boardId, conn.id).catch((err) => console.error(err));
     if (history) {
@@ -285,19 +303,36 @@ export function createConnectionLayer({
   // Remove every arrow touching a node (the node was just deleted). The server
   // also prunes these on its side; here we just keep the UI in sync.
   function removeForNode(nodeId) {
-    for (const conn of conns.filter((c) => c.from === nodeId || c.to === nodeId)) {
+    for (const conn of conns.filter(
+      (c) => c.kind === "node" && (c.from === nodeId || c.to === nodeId)
+    )) {
       removeConn(conn);
     }
     notify();
   }
 
-  /* ---- connect mode: drag from one node to another (radial menu) ---- */
+  // Same, for a deleted section's arrows.
+  function removeForSection(sectionId) {
+    for (const conn of conns.filter(
+      (c) => c.kind === "section" && (c.from === sectionId || c.to === sectionId)
+    )) {
+      removeConn(conn);
+    }
+    notify();
+  }
 
-  // Enter connect mode. Nodes are locked (see app.js) so a press starts an
-  // arrow rather than moving the node.
+  /* ---- connect mode: drag from one thing to another (radial menu) ---- */
+
+  // Enter connect mode. Nodes are locked (see app.js) so a press on a node only
+  // starts an arrow (routed here via startDragFrom). Presses that miss every node
+  // are caught by onConnectDown below, which resolves them to the innermost
+  // section. One capture-phase listener handles that, pre-empting the section's
+  // own move/select handlers.
   function beginConnect() {
+    if (connecting) return;
     connecting = true;
     document.body.classList.add("connecting");
+    document.addEventListener("mousedown", onConnectDown, true);
   }
 
   function endDrag() {
@@ -315,31 +350,73 @@ export function createConnectionLayer({
     connecting = false;
     endDrag();
     document.body.classList.remove("connecting");
+    document.removeEventListener("mousedown", onConnectDown, true);
   }
 
-  // Called by the app when a node is pressed while in connect mode: begin
-  // dragging a ghost arrow out of that node.
-  function startDragFrom(node) {
-    if (!connecting || drag) return;
+  // A press while connecting. Hierarchy: a node wins if one is under the cursor —
+  // and the node layer (locked) handles that press itself, so we bow out and let
+  // the event reach it. Otherwise we resolve the innermost section by geometry
+  // and start a section arrow. A press over neither exits the mode and lets the
+  // click do its normal thing.
+  function onConnectDown(e) {
+    if (e.button !== 0) return;
+    // Leave UI chrome alone — sections are hit-tested by world geometry, which is
+    // blind to overlays, so a press on the HUD/help/sidebar must not start an arrow.
+    if (!e.target.closest("#canvas")) return; // outside the canvas (e.g. sidebar)
+    if (e.target.closest("#hud, #help-btn, #help-guide")) return;
+    if (elAt(e.clientX, e.clientY, ".node")) return; // node wins — let nodes.js handle it
+    const r = canvas.getBoundingClientRect();
+    const w = screenToWorld(e.clientX - r.left, e.clientY - r.top);
+    const hit = getSectionAt(w.x, w.y);
+    e.preventDefault();
+    e.stopPropagation(); // pre-empt section move/select, box-select, or pan
+    if (!hit) {
+      cancelConnect();
+      return;
+    }
+    if (!drag) startDrag("section", hit);
+  }
+
+  // Begin dragging a ghost arrow out of `from` ({id, el}) of the given kind.
+  function startDrag(kind, from) {
     const ghost = document.createElementNS(SVGNS, "line");
-    ghost.setAttribute("class", "conn-ghost");
+    ghost.setAttribute(
+      "class",
+      kind === "section" ? "conn-ghost conn-ghost-section" : "conn-ghost"
+    );
     ghost.setAttribute("marker-end", "url(#arrowhead)");
     svg.appendChild(ghost);
-    drag = { from: node, ghost, target: null };
-    node.el.classList.add("conn-source");
+    drag = { kind, from, ghost, target: null };
+    from.el.classList.add("conn-source");
     window.addEventListener("mousemove", onDragMove);
     window.addEventListener("mouseup", onDragEnd);
   }
 
-  // The node element under the cursor, if any (the ghost/labels/sections are
-  // all pointer-events:none, so this finds the real node beneath).
-  function nodeElAt(clientX, clientY) {
-    const el = document.elementFromPoint(clientX, clientY);
-    return el ? el.closest(".node") : null;
+  // Called by the app when a (locked) node is pressed while connecting: start a
+  // node arrow from it. Matches the "node wins" rule in onConnectDown.
+  function startDragFrom(node) {
+    if (!connecting || drag) return;
+    startDrag("node", node);
   }
 
-  function setTarget(el) {
-    const next = el ? { id: el.dataset.id, el } : null;
+  // The node element under the cursor, if any (ghosts/labels are click-through,
+  // so this finds the real node beneath). Sections resolve by geometry instead.
+  function elAt(clientX, clientY, selector) {
+    const el = document.elementFromPoint(clientX, clientY);
+    return el ? el.closest(selector) : null;
+  }
+
+  // Resolve the prospective target ({id, el}|null) under the cursor, of the
+  // drag's kind: a node by DOM hit-test, a section by world-space geometry.
+  function targetAt(clientX, clientY, world) {
+    if (drag.kind === "node") {
+      const el = elAt(clientX, clientY, ".node");
+      return el ? { id: el.dataset.id, el } : null;
+    }
+    return getSectionAt(world.x, world.y);
+  }
+
+  function setTarget(next) {
     if ((drag.target && drag.target.el) === (next && next.el)) return;
     if (drag.target) drag.target.el.classList.remove("conn-target");
     drag.target = next;
@@ -348,21 +425,22 @@ export function createConnectionLayer({
 
   function onDragMove(e) {
     if (!drag) return;
-    const fromRect = getNodeRect(drag.from.id);
+    const fromRect = rectFor(drag.kind, drag.from.id);
     if (!fromRect) return;
 
-    let el = nodeElAt(e.clientX, e.clientY);
-    if (el && el.dataset.id === drag.from.id) el = null; // ignore the source
-    setTarget(el);
+    const r = canvas.getBoundingClientRect();
+    const cursor = screenToWorld(e.clientX - r.left, e.clientY - r.top);
+
+    let hit = targetAt(e.clientX, e.clientY, cursor);
+    if (hit && hit.id === drag.from.id) hit = null; // ignore the source
+    setTarget(hit);
 
     let a, b;
     if (drag.target) {
-      const tRect = getNodeRect(drag.target.id);
+      const tRect = rectFor(drag.kind, drag.target.id);
       a = borderPoint(fromRect, center(tRect));
       b = borderPoint(tRect, center(fromRect));
     } else {
-      const r = canvas.getBoundingClientRect();
-      const cursor = screenToWorld(e.clientX - r.left, e.clientY - r.top);
       a = borderPoint(fromRect, cursor);
       b = cursor;
     }
@@ -374,21 +452,21 @@ export function createConnectionLayer({
 
   async function onDragEnd() {
     if (!drag) return;
+    const kind = drag.kind;
     const fromId = drag.from.id;
     const target = drag.target;
     endDrag();
     cancelConnect(); // one arrow per activation; exit the mode
 
     if (!target || target.id === fromId) return; // released on nothing / self
-    if (conns.some(c => c.from === fromId && c.to === target.id)) return; // already exists
+    // Skip if an identical arrow (same kind + direction) already exists.
+    if (conns.some((c) => c.kind === kind && c.from === fromId && c.to === target.id)) return;
     const boardId = getBoardId();
     if (!boardId) return;
     try {
-      const conn = await api.createConnection(boardId, {
-        from: fromId,
-        to: target.id,
-        label: "",
-      });
+      const payload = { from: fromId, to: target.id, label: "" };
+      if (kind === "section") payload.kind = "section";
+      const conn = await api.createConnection(boardId, payload);
       const created = addConnEl(conn);
       redraw();
       select(created);
@@ -405,6 +483,7 @@ export function createConnectionLayer({
     redraw,
     deleteSelected,
     removeForNode,
+    removeForSection,
     beginConnect,
     cancelConnect,
     startDragFrom,

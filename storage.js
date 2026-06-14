@@ -617,9 +617,70 @@ function deleteSection(id, sectionId) {
   const layout = readLayout(id);
   layout.sections = sectionsOf(layout).filter((s) => s.id !== sectionId);
   writeLayout(id, layout);
+  pruneConnections(id, sectionId); // drop arrows that referenced the section
   // reconcile moves any nodes that were inside back out, then removes the folder.
   reconcileSections(id, layout);
   return { ok: true };
+}
+
+/* ---------- resource operations (uploaded files) ---------- */
+//
+// Dragged-in files land in a flat <board>/resources/ folder. They carry no
+// references and aren't tracked in layout.json — they're just bytes on disk for
+// now (node attachment comes later). The original filename is preserved, only
+// sanitized to a safe basename; collisions get a " (2)" suffix.
+
+function resourcesDir(id) {
+  return path.join(boardDir(id), "resources");
+}
+
+// Reduce an arbitrary client-supplied name to a safe basename: strip any path
+// segments, control chars, and characters illegal in Windows filenames, and
+// drop leading dots so it can't become a dotfile or "..".
+function safeFilename(name) {
+  const base = String(name || "")
+    .split(/[\\/]/)
+    .pop()
+    .replace(/[\x00-\x1f<>:"|?*]/g, "")
+    .replace(/^\.+/, "")
+    .trim();
+  return base || "file";
+}
+
+// Append " (2)", " (3)", … before the extension until the name is free in dir.
+function uniqueFilename(dir, name) {
+  const ext = path.extname(name);
+  const stem = path.basename(name, ext);
+  let candidate = name;
+  let i = 2;
+  while (fs.existsSync(path.join(dir, candidate))) {
+    candidate = stem + " (" + i++ + ")" + ext;
+  }
+  return candidate;
+}
+
+function listResources(id) {
+  let entries = [];
+  try {
+    entries = fs.readdirSync(resourcesDir(id), { withFileTypes: true });
+  } catch (_) {}
+  return entries
+    .filter((e) => e.isFile())
+    .map((e) => {
+      let size = 0;
+      try {
+        size = fs.statSync(path.join(resourcesDir(id), e.name)).size;
+      } catch (_) {}
+      return { name: e.name, size };
+    });
+}
+
+function saveResource(id, filename, buffer) {
+  const dir = resourcesDir(id);
+  fs.mkdirSync(dir, { recursive: true });
+  const name = uniqueFilename(dir, safeFilename(filename));
+  fs.writeFileSync(path.join(dir, name), buffer);
+  return { name, size: buffer.length };
 }
 
 /* ---------- connection operations ---------- */
@@ -632,6 +693,9 @@ function createConnection(id, data) {
     to: String(data.to || ""),
     label: typeof data.label === "string" ? data.label : "",
   };
+  // Section arrows are tagged so the client knows to resolve their endpoints
+  // against section (not node) rects. Node arrows stay untagged (legacy shape).
+  if (data.kind === "section") conn.kind = "section";
   if (
     typeof data.id === "string" &&
     safeSeg(data.id) &&
@@ -660,12 +724,14 @@ function deleteConnection(id, connId) {
   return { ok: true };
 }
 
-// Remove any connections that reference a node (called when the node is deleted).
-function pruneConnections(id, nodeId) {
+// Remove any connections that reference a thing by id (called when a node or
+// section is deleted). Node and section ids never collide, so matching by id
+// alone is unambiguous.
+function pruneConnections(id, refId) {
   const conns = readConnections(id);
   const before = conns.connections.length;
   conns.connections = conns.connections.filter(
-    (c) => c.from !== nodeId && c.to !== nodeId
+    (c) => c.from !== refId && c.to !== refId
   );
   if (conns.connections.length !== before) writeConnections(id, conns);
 }
@@ -686,6 +752,27 @@ function readBody(req) {
   });
 }
 
+// Collect the request body as raw bytes (for binary uploads), capped so a
+// runaway upload can't exhaust memory.
+const MAX_UPLOAD = 50 * 1024 * 1024; // 50 MB
+function readRawBody(req, limit = MAX_UPLOAD) {
+  return new Promise((resolve, reject) => {
+    const chunks = [];
+    let size = 0;
+    req.on("data", (c) => {
+      size += c.length;
+      if (size > limit) {
+        reject(new Error("file too large"));
+        req.destroy();
+        return;
+      }
+      chunks.push(c);
+    });
+    req.on("end", () => resolve(Buffer.concat(chunks)));
+    req.on("error", reject);
+  });
+}
+
 function sendJson(res, status, obj) {
   res.writeHead(status, { "Content-Type": "application/json" });
   res.end(JSON.stringify(obj));
@@ -702,8 +789,10 @@ function sendJson(res, status, obj) {
 //   POST   /api/boards/:id/sections                { x, y, w, h, label? }
 //   PATCH  /api/boards/:id/sections/:sectionId     { x?, y?, w?, h?, label? }
 //   DELETE /api/boards/:id/sections/:sectionId
+//   GET    /api/boards/:id/resources
+//   POST   /api/boards/:id/resources           raw file bytes; name in X-Filename
 //   GET    /api/boards/:id/connections
-//   POST   /api/boards/:id/connections             { from, to, label? }
+//   POST   /api/boards/:id/connections             { from, to, label?, kind? }
 //   PATCH  /api/boards/:id/connections/:connId     { label? }
 //   DELETE /api/boards/:id/connections/:connId
 async function handleApi(req, res, pathname) {
@@ -782,6 +871,27 @@ async function handleApi(req, res, pathname) {
         return sendJson(res, 200, updateSection(id, sectionId, body));
       }
       if (method === "DELETE") return sendJson(res, 200, deleteSection(id, sectionId));
+    }
+
+    // /api/boards/:id/resources
+    if (seg.length === 4 && seg[1] === "boards" && seg[3] === "resources") {
+      const id = seg[2];
+      if (!safeSeg(id) || !fs.existsSync(boardDir(id)))
+        return sendJson(res, 404, { error: "board not found" });
+      if (method === "GET") return sendJson(res, 200, listResources(id));
+      if (method === "POST") {
+        // The original filename rides in the X-Filename header (URL-encoded so
+        // it can carry unicode/spaces safely); the body is the raw file bytes.
+        const raw = req.headers["x-filename"] || "";
+        let filename = "";
+        try {
+          filename = decodeURIComponent(raw);
+        } catch (_) {
+          filename = raw;
+        }
+        const buffer = await readRawBody(req);
+        return sendJson(res, 201, saveResource(id, filename, buffer));
+      }
     }
 
     // /api/boards/:id/connections

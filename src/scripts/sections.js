@@ -15,7 +15,7 @@ import { createSelection } from "./selection.js";
 const MIN_SIZE = 24; // world px — drags smaller than this are treated as a miss
 const DEFAULT_LABEL = "section";
 
-export function createSectionLayer({ layer, canvas, getBoardId, onChange, history, onGroupDragStart, onGroupDragMove, onGroupDragEnd, onSectionDragStart, onSectionDragMove, onSectionDragEnd }) {
+export function createSectionLayer({ layer, canvas, getBoardId, onChange, history, onDelete, onGroupDragStart, onGroupDragMove, onGroupDragEnd, onSectionDragStart, onSectionDragMove, onSectionDragEnd }) {
   let sections = []; // { id, x, y, w, h, label, el, labelEl }
   let drawing = false;
   let drawState = null;
@@ -290,6 +290,7 @@ export function createSectionLayer({ layer, canvas, getBoardId, onChange, histor
       label: section.label,
     };
     removeSection(section);
+    if (onDelete) onDelete(section.id); // drop any arrows that linked this section
     if (boardId) api.deleteSection(boardId, section.id).catch((err) => console.error(err));
 
     if (history) {
@@ -407,6 +408,26 @@ export function createSectionLayer({ layer, canvas, getBoardId, onChange, histor
     return sections.map((s) => ({ x: s.x, y: s.y, w: s.w, h: s.h }));
   }
 
+  // Live world rect for one section (used by the connection layer to route
+  // section arrows). Null if the section no longer exists.
+  function getSectionRect(id) {
+    const s = sections.find((x) => x.id === id);
+    return s ? { x: s.x, y: s.y, w: s.w, h: s.h } : null;
+  }
+
+  // The innermost section containing a world point — smallest area wins, so a
+  // nested section beats its parent. Returns { id, el } (for arrow hit-testing)
+  // or null. Used by the unified arrow tool to pick a section endpoint.
+  function sectionAtWorld(wx, wy) {
+    let best = null;
+    for (const s of sections) {
+      if (wx >= s.x && wy >= s.y && wx <= s.x + s.w && wy <= s.y + s.h) {
+        if (!best || s.w * s.h < best.w * best.h) best = s;
+      }
+    }
+    return best ? { id: best.id, el: best.el } : null;
+  }
+
   return {
     load,
     clear,
@@ -414,6 +435,8 @@ export function createSectionLayer({ layer, canvas, getBoardId, onChange, histor
     cancelDraw,
     deleteSelected,
     getRects,
+    getSectionRect,
+    sectionAtWorld,
     isDrawing: () => drawing,
     selectInRect: sel.selectInRect,
     clearGroupSel: sel.clearGroup,

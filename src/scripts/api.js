@@ -35,6 +35,22 @@ export const api = {
   deleteSection: (id, sectionId) =>
     req("DELETE", board(id) + "/sections/" + encodeURIComponent(sectionId)),
 
+  // Upload a dragged-in File to the board's resources folder. Raw bytes in the
+  // body; the filename rides in a header so it survives unicode/spaces.
+  listResources: (id) => req("GET", board(id) + "/resources"),
+  uploadResource: async (id, file) => {
+    const res = await fetch(board(id) + "/resources", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/octet-stream",
+        "X-Filename": encodeURIComponent(file.name),
+      },
+      body: file,
+    });
+    if (!res.ok) throw new Error("upload " + file.name + " -> " + res.status);
+    return res.json();
+  },
+
   listConnections: (id) => req("GET", board(id) + "/connections"),
   createConnection: (id, conn) => req("POST", board(id) + "/connections", conn),
   updateConnection: (id, connId, patch) =>

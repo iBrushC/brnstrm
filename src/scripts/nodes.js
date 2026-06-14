@@ -1,11 +1,12 @@
 // Node layer — kept separate from app/canvas because nodes will grow far more
 // complex (multiple content types, resizing, connections, etc.). For now a node
-// is a draggable, resizable box with a title bar and a plain textarea.
+// is a draggable, resizable box with a title bar and a markdown body editor.
 
 import { view } from "./view.js";
 import { api } from "./api.js";
 import { inlineEdit } from "./inline-edit.js";
 import { createSelection } from "./selection.js";
+import { createMarkdownEditor } from "./markdown-editor.js";
 
 const DEFAULT_W = 220;
 const DEFAULT_H = 140;
@@ -30,7 +31,7 @@ export function createNodeLayer({
   onGroupDragMove,
   onGroupDragEnd,
 }) {
-  let nodes = []; // { id, x, y, w, h, content, el, textarea }
+  let nodes = []; // { id, x, y, w, h, content, el, editor }
   let containedOrigins = []; // captured when a section drag moves its contained nodes
 
   const locked = () => (typeof isLocked === "function" ? isLocked() : false);
@@ -80,11 +81,19 @@ export function createNodeLayer({
     bar.textContent = data.name || data.id;
     bar.title = "drag to move · right-click to rename";
 
-    const ta = document.createElement("textarea");
-    ta.className = "node-text";
-    ta.value = data.content || "";
-    ta.spellcheck = false;
-    ta.placeholder = "…";
+    // The body is a live-preview markdown editor (see markdown-editor.js).
+    // `node` is referenced by the editor's input callback, so it's forward
+    // declared and assigned just below.
+    let node;
+    let persistTimer;
+    const md = createMarkdownEditor({
+      value: data.content || "",
+      onInput: (value) => {
+        node.content = value;
+        clearTimeout(persistTimer);
+        persistTimer = setTimeout(() => persist(node, { content: value }), 400);
+      },
+    });
 
     const handle = document.createElement("div");
     handle.className = "node-resize";
@@ -95,10 +104,10 @@ export function createNodeLayer({
     deleteBtn.textContent = "×";
     deleteBtn.title = "Delete node";
 
-    el.append(bar, ta, handle, deleteBtn);
+    el.append(bar, md.toolbar, md.editor, handle, deleteBtn);
     viewport.appendChild(el);
 
-    const node = {
+    node = {
       id: data.id,
       name: data.name || "",
       x: data.x,
@@ -108,7 +117,7 @@ export function createNodeLayer({
       content: data.content || "",
       el,
       bar,
-      textarea: ta,
+      editor: md,
     };
     nodes.push(node);
 
@@ -116,7 +125,7 @@ export function createNodeLayer({
     el.addEventListener("mousedown", (e) => {
       e.stopPropagation();
       // While locked (connect mode), the press only starts an arrow — don't
-      // select or focus the textarea underneath.
+      // select or focus the body editor underneath.
       if (locked()) {
         e.preventDefault();
         if (onNodeClick) onNodeClick(node);
@@ -139,14 +148,6 @@ export function createNodeLayer({
     handle.addEventListener("mousedown", (e) => startResize(e, node));
     deleteBtn.addEventListener("mousedown", (e) => e.stopPropagation());
     deleteBtn.addEventListener("click", (e) => { e.stopPropagation(); deleteNode(node); });
-
-    // Persist content edits (debounced).
-    let timer;
-    ta.addEventListener("input", () => {
-      node.content = ta.value;
-      clearTimeout(timer);
-      timer = setTimeout(() => persist(node, { content: ta.value }), 400);
-    });
 
     return node;
   }
@@ -315,7 +316,7 @@ export function createNodeLayer({
       const node = await api.createNode(id, { x: Math.round(wx), y: Math.round(wy) });
       const created = addNodeEl(node);
       select(created);
-      beginRename(created, { onCommit: () => setTimeout(() => created.textarea.focus(), 0) });
+      beginRename(created, { onCommit: () => setTimeout(() => created.editor.focus(), 0) });
       onChange();
     } catch (err) {
       console.error(err);

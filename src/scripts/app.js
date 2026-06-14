@@ -311,8 +311,8 @@ const history = createHistory();
 
 /* ---------------- Radial add menu ---------------- */
 // Each quarter spawns a different kind of thing. "Note" spawns instantly at the
-// press point; "Section" and "Arrow" instead enter a follow-up interaction mode
-// (drag a rectangle / click two nodes), so their onPick ignores the point.
+// press point; the others instead enter a follow-up interaction mode (drag a
+// rectangle / drag between two things), so their onPick ignores the point.
 const radial = createRadialMenu({
   container: canvas,
   options: [
@@ -348,7 +348,10 @@ canvas.addEventListener("mousemove", (e) => {
 
 function isTyping() {
   const el = document.activeElement;
-  return el && (el.tagName === "TEXTAREA" || el.tagName === "INPUT");
+  return (
+    el &&
+    (el.tagName === "TEXTAREA" || el.tagName === "INPUT" || el.isContentEditable)
+  );
 }
 
 window.addEventListener("keydown", (e) => {
@@ -456,6 +459,8 @@ sections = createSectionLayer({
   onSectionDragStart: (section) => nodeLayer && nodeLayer.captureNodesInRect(section),
   onSectionDragMove: (dx, dy) => nodeLayer && nodeLayer.applyContainedOffset(dx, dy),
   onSectionDragEnd: () => nodeLayer && nodeLayer.commitContainedMove(),
+  // Deleting a section drops the arrows that linked it (UI side; server prunes too).
+  onDelete: (sectionId) => connections && connections.removeForSection(sectionId),
 });
 
 connections = createConnectionLayer({
@@ -464,6 +469,8 @@ connections = createConnectionLayer({
   canvas,
   getBoardId: () => boards.current(),
   getNodeRect: (id) => nodeLayer.getNodeRect(id),
+  getSectionRect: (id) => sections.getSectionRect(id),
+  getSectionAt: (wx, wy) => sections.sectionAtWorld(wx, wy),
   onChange: drawMinimap,
   history,
 });
@@ -490,6 +497,75 @@ const boards = createBoardBar({
       render();
     }
   },
+});
+
+/* ---------------- File drop → upload to board resources ---------------- */
+// Dragging files onto the canvas uploads them to the board's resources folder.
+// This is file-side only: no nodes are created. A depth counter keeps the
+// drop-zone highlight stable as the drag passes over child elements.
+let dragDepth = 0;
+
+function showInfoToast(message) {
+  const el = document.createElement("div");
+  el.className = "toast";
+  const msg = document.createElement("span");
+  msg.textContent = message;
+  el.appendChild(msg);
+  document.body.appendChild(el);
+  setTimeout(() => el.remove(), 4000);
+}
+
+// Only react to drags that actually carry files (ignore in-canvas element drags).
+function hasFiles(e) {
+  return Array.from(e.dataTransfer?.types || []).includes("Files");
+}
+
+// Stop the browser from opening a file that's dropped anywhere off the canvas.
+window.addEventListener("dragover", (e) => {
+  if (hasFiles(e)) e.preventDefault();
+});
+window.addEventListener("drop", (e) => {
+  if (hasFiles(e)) e.preventDefault();
+});
+
+canvas.addEventListener("dragenter", (e) => {
+  if (!hasFiles(e)) return;
+  e.preventDefault();
+  dragDepth++;
+  canvas.classList.add("drag-over");
+});
+
+canvas.addEventListener("dragover", (e) => {
+  if (!hasFiles(e)) return;
+  e.preventDefault();
+  e.dataTransfer.dropEffect = "copy";
+});
+
+canvas.addEventListener("dragleave", (e) => {
+  if (!hasFiles(e)) return;
+  dragDepth = Math.max(0, dragDepth - 1);
+  if (dragDepth === 0) canvas.classList.remove("drag-over");
+});
+
+canvas.addEventListener("drop", async (e) => {
+  if (!hasFiles(e)) return;
+  e.preventDefault();
+  dragDepth = 0;
+  canvas.classList.remove("drag-over");
+
+  const id = boards.current();
+  const files = Array.from(e.dataTransfer.files || []);
+  if (!id || files.length === 0) return;
+
+  const results = await Promise.allSettled(
+    files.map((f) => api.uploadResource(id, f))
+  );
+  const ok = results.filter((r) => r.status === "fulfilled").length;
+  const failed = results.length - ok;
+
+  let msg = ok === 1 ? "Uploaded 1 file" : "Uploaded " + ok + " files";
+  if (failed) msg += " · " + failed + " failed";
+  showInfoToast(msg);
 });
 
 await boards.load();
