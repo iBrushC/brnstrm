@@ -60,8 +60,6 @@
           </div>
         </div>
 
-        <div id="hint">hold <kbd>a</kbd> &amp; aim: ↑ node · ← section · → arrow</div>
-
         <button id="export-board" type="button" title="Copy this board as an LLM prompt">⧉ to agent</button>
 
         <button id="help-btn" type="button" title="Show controls">?</button>
@@ -79,33 +77,21 @@
             <div class="help-row"><span class="help-key">arrange</span><span>auto-layout notes by their arrows</span></div>
           </div>
           <div class="help-section">
-            <div class="help-section-title">radial menu</div>
-            <div class="help-row"><kbd>a</kbd><span>hold &amp; aim, release to pick</span></div>
-            <div class="help-row"><span class="help-key">↑ aim up</span><span>add a node</span></div>
-            <div class="help-row"><span class="help-key">← aim left</span><span>draw a section</span></div>
-            <div class="help-row"><span class="help-key">→ aim right</span><span>connect with an arrow</span></div>
-          </div>
-          <div class="help-section">
             <div class="help-section-title">nodes</div>
-            <div class="help-row"><span class="help-key">click</span><span>select node</span></div>
+            <div class="help-row"><kbd>a</kbd><span>hold &amp; aim, release to add a note</span></div>
             <div class="help-row"><span class="help-key">drag title bar</span><span>move node</span></div>
             <div class="help-row"><span class="help-key">drag corner</span><span>resize node</span></div>
-            <div class="help-row"><kbd>Del</kbd><span>delete selected</span></div>
-            <div class="help-row"><span class="help-key">Ctrl+Z</span><span>undo (e.g. delete)</span></div>
-            <div class="help-row"><span class="help-key">type</span><span>edit content (auto-saved)</span></div>
+            <div class="help-row"><span class="help-key">Ctrl+Z</span><span>undo (delete, move, resize, paste)</span></div>
           </div>
           <div class="help-section">
             <div class="help-section-title">sections &amp; arrows</div>
             <div class="help-row"><span class="help-key">drag</span><span>section: top-left → bottom-right</span></div>
             <div class="help-row"><span class="help-key">drag source→target</span><span>arrow: node→node or section→section</span></div>
             <div class="help-row"><span class="help-key">right-click</span><span>rename a label</span></div>
-            <div class="help-row"><span class="help-key">×</span><span>delete section</span></div>
           </div>
           <div class="help-section">
             <div class="help-section-title">export to an LLM</div>
             <div class="help-row"><span class="help-key">⧉ to agent</span><span>top-right: copy whole board as a prompt</span></div>
-            <div class="help-row"><span class="help-key">hover note</span><span>copy a single note</span></div>
-            <div class="help-row"><span class="help-key">hover section</span><span>copy a section &amp; its notes</span></div>
           </div>
           <div class="help-section">
             <div class="help-section-title">boards</div>

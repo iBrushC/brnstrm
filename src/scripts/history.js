@@ -1,10 +1,11 @@
 // Generic undo stack. Each entry is a "command": { label, undo() }.
 //
-// Kept deliberately small and action-agnostic so new undoable actions (move,
-// resize, create, …) can be recorded the same way later — build a command with
-// an undo() that reverses the action, push it, and Ctrl+Z handles the rest.
-// Redo is intentionally left out for now; add a parallel redo stack here when
-// it's needed.
+// Kept deliberately small and action-agnostic: every undoable action (delete,
+// move, resize, paste, …) builds a command whose undo() reverses it, pushes it,
+// and Ctrl+Z handles the rest. A whole gesture that touches several things (e.g.
+// dragging a group of nodes and sections at once) is recorded as one command so
+// a single undo reverses the lot. Redo is intentionally left out for now; add a
+// parallel redo stack here when it's needed.
 
 export function createHistory(limit = 200) {
   let stack = [];

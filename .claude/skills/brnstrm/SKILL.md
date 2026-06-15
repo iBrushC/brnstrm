@@ -42,6 +42,11 @@ node bin/brnstrm.mjs read-resource my-board spec.md  # print one reference file
 
 ## Writing
 
+Note bodies are **markdown** — they render with live formatting in the app, so
+use it whenever it helps the content: headings, **bold**/_italic_, bullet and
+numbered lists, `inline code` and fenced code blocks, links, and `> quotes`.
+Reach for structure (a short heading + a few bullets) over a wall of prose.
+
 Add a note straight into a section — geometry is computed for you, so you never
 deal with pixel coordinates. Pass long markdown bodies via a file or stdin:
 

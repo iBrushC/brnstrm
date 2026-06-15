@@ -291,7 +291,10 @@ body.connecting #canvas * {
 #grid {
   position: absolute;
   inset: 0;
-  background-image: radial-gradient(var(--dot) 1.5px, transparent 1.5px);
+  background-image: radial-gradient(
+    var(--dot) var(--dot-r, 1.5px),
+    transparent var(--dot-r, 1.5px)
+  );
   background-size: var(--grid-size) var(--grid-size);
   background-position: var(--grid-x, 0px) var(--grid-y, 0px);
 }

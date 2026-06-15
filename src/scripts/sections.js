@@ -40,6 +40,19 @@ export function createSectionLayer({ layer, canvas, getBoardId, onChange, histor
   const activeDrag = createDragSet({ place, persist: persistMove });
   const containedDrag = createDragSet({ place, persist: persistMove });
 
+  // Fold a gesture's moved items (sections plus any nested sections and the nodes
+  // a dragged section carries — see drag-set commit()) into one undo command.
+  function recordMove(moved) {
+    if (!history || !moved.length) return;
+    history.push({
+      label: moved.length === 1 ? "move section" : "move " + moved.length + " items",
+      undo: () => {
+        moved.forEach((m) => m.restore());
+        notify();
+      },
+    });
+  }
+
   document.addEventListener("mousedown", (e) => {
     if (!e.shiftKey && !e.target.closest(".section")) select(null);
   });
@@ -204,10 +217,17 @@ export function createSectionLayer({ layer, canvas, getBoardId, onChange, histor
   }
   function endDrag() {
     if (drag) {
-      activeDrag.commit();
-      if (drag.crossLayer && onGroupDragEnd) onGroupDragEnd();
-      if (drag.sectionDrag && onSectionDragEnd) onSectionDragEnd();
-      if (drag.sectionDrag) containedDrag.commit();
+      const moved = activeDrag.commit();
+      if (drag.crossLayer && onGroupDragEnd) {
+        const more = onGroupDragEnd(); // nodes moved with this group
+        if (Array.isArray(more)) moved.push(...more);
+      }
+      if (drag.sectionDrag && onSectionDragEnd) {
+        const more = onSectionDragEnd(); // nodes the section carried along
+        if (Array.isArray(more)) moved.push(...more);
+      }
+      if (drag.sectionDrag) moved.push(...containedDrag.commit()); // nested sections
+      recordMove(moved);
       drag = null;
     }
     window.removeEventListener("mousemove", onDrag);
@@ -233,10 +253,22 @@ export function createSectionLayer({ layer, canvas, getBoardId, onChange, histor
   }
   function endResize() {
     if (resize) {
-      persist(resize.section, {
-        w: Math.round(resize.section.w),
-        h: Math.round(resize.section.h),
-      });
+      const section = resize.section;
+      const from = { w: Math.round(resize.ow), h: Math.round(resize.oh) };
+      const to = { w: Math.round(section.w), h: Math.round(section.h) };
+      persist(section, to);
+      if (history && (from.w !== to.w || from.h !== to.h)) {
+        history.push({
+          label: "resize section",
+          undo: () => {
+            section.w = from.w;
+            section.h = from.h;
+            applyRect(section.el, section);
+            persist(section, from);
+            notify();
+          },
+        });
+      }
       resize = null;
     }
     window.removeEventListener("mousemove", onResize);

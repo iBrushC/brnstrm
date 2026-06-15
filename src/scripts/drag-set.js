@@ -24,12 +24,32 @@ export function createDragSet({ place, persist }) {
       });
       return origins.length;
     },
-    // Persist final integer positions and drop the snapshot.
+    // Persist the final integer positions of the items that actually moved and
+    // drop the snapshot. Returns one descriptor per moved item carrying a
+    // self-contained restore() (used to build a single undo command for the whole
+    // gesture, even when it spans several drag sets across layers).
     commit() {
-      origins.forEach((o) =>
-        persist(o.item, { x: Math.round(o.item.x), y: Math.round(o.item.y) })
-      );
+      const moved = [];
+      origins.forEach((o) => {
+        const from = { x: Math.round(o.ox), y: Math.round(o.oy) };
+        const to = { x: Math.round(o.item.x), y: Math.round(o.item.y) };
+        if (from.x === to.x && from.y === to.y) return; // a click, not a drag
+        persist(o.item, to);
+        const item = o.item;
+        moved.push({
+          item,
+          from,
+          to,
+          restore() {
+            item.x = from.x;
+            item.y = from.y;
+            place(item);
+            persist(item, from);
+          },
+        });
+      });
       origins = [];
+      return moved;
     },
     clear() {
       origins = [];

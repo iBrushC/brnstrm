@@ -41,6 +41,18 @@ export function createSelection({ getItems, place, persist, onChange }) {
     group.forEach((it) => it.el.classList.add("group-selected"));
   }
 
+  // Select an explicit set of items as a marquee group (used after a paste, so
+  // the freshly-created copies come in ready to drag as one).
+  function setGroup(items) {
+    if (selected) {
+      selected.el.classList.remove("selected");
+      selected = null;
+    }
+    clearGroup();
+    group = items.slice();
+    group.forEach((it) => it.el.classList.add("group-selected"));
+  }
+
   function shiftSelect(item) {
     // Seed the group from the current single selection on first shift+click.
     if (group.length === 0 && selected) {
@@ -78,14 +90,16 @@ export function createSelection({ getItems, place, persist, onChange }) {
     if (crossDrag.apply(dx, dy)) notify();
   }
 
-  // Persist the moved items when the driving layer's drag ends.
+  // Persist the moved items when the driving layer's drag ends. Returns the
+  // moved descriptors so the driving layer can fold them into one undo command.
   function commitMove() {
-    crossDrag.commit();
+    return crossDrag.commit();
   }
 
   return {
     select,
     selectInRect,
+    setGroup,
     shiftSelect,
     clearGroup,
     reset,

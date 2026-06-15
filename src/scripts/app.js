@@ -80,6 +80,12 @@ function render() {
   grid.style.setProperty("--grid-size", size + "px");
   grid.style.setProperty("--grid-x", (view.x % size) + "px");
   grid.style.setProperty("--grid-y", (view.y % size) + "px");
+  // Dots track the zoom so they shrink as you zoom out (and don't dominate the
+  // canvas when you zoom in), clamped so they never vanish or balloon.
+  grid.style.setProperty(
+    "--dot-r",
+    Math.max(0.5, Math.min(3, 1.5 * view.scale)) + "px"
+  );
 
   zoomLabel.textContent = Math.round(view.scale * 100) + "%";
   drawMinimap();
@@ -470,6 +476,7 @@ const radial = createRadialMenu({
 
 /* ---------------- Node keybinds ---------------- */
 let lastMouse = { x: 0, y: 0 }; // canvas-relative
+let clipboard = []; // copied note snapshots, pasted at the cursor with Ctrl+V
 
 canvas.addEventListener("mousemove", (e) => {
   const r = canvas.getBoundingClientRect();
@@ -501,7 +508,8 @@ window.addEventListener("keydown", (e) => {
     return;
   }
 
-  // Undo (Ctrl/Cmd+Z) — currently restores deleted nodes.
+  // Undo (Ctrl/Cmd+Z) — reverses the last recorded action: delete, move,
+  // resize, or paste (see each layer + history.js).
   if (
     (e.key === "z" || e.key === "Z") &&
     (e.metaKey || e.ctrlKey) &&
@@ -510,6 +518,24 @@ window.addEventListener("keydown", (e) => {
   ) {
     e.preventDefault();
     history.undo();
+    return;
+  }
+
+  // Copy / paste notes (in-app clipboard). Skipped while typing so Ctrl+C/V keep
+  // their normal text behaviour inside a note's editor.
+  if ((e.key === "c" || e.key === "C") && (e.metaKey || e.ctrlKey) && !e.shiftKey && !isTyping() && nodeLayer) {
+    const items = nodeLayer.copySelected();
+    if (items.length) {
+      clipboard = items;
+      e.preventDefault();
+      toast(items.length === 1 ? "Copied note" : "Copied " + items.length + " notes");
+    }
+    return;
+  }
+  if ((e.key === "v" || e.key === "V") && (e.metaKey || e.ctrlKey) && !e.shiftKey && !isTyping() && nodeLayer && clipboard.length) {
+    e.preventDefault();
+    const w = screenToWorld(lastMouse.x, lastMouse.y);
+    nodeLayer.pasteAt(clipboard, w.x, w.y);
     return;
   }
 

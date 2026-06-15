@@ -57,6 +57,19 @@ export function createNodeLayer({
   const activeDrag = createDragSet({ place, persist: persistMove });
   const containedDrag = createDragSet({ place, persist: persistMove });
 
+  // Fold a gesture's moved items (which may span several drag sets across both
+  // layers — see drag-set commit()) into a single undo command.
+  function recordMove(moved) {
+    if (!history || !moved.length) return;
+    history.push({
+      label: moved.length === 1 ? "move node" : "move " + moved.length + " items",
+      undo: () => {
+        moved.forEach((m) => m.restore());
+        onChange();
+      },
+    });
+  }
+
   document.addEventListener("mousedown", (e) => {
     if (!e.shiftKey && !e.target.closest(".node")) select(null);
   });
@@ -234,8 +247,12 @@ export function createNodeLayer({
 
   function endDrag() {
     if (drag) {
-      activeDrag.commit();
-      if (drag.crossLayer && onGroupDragEnd) onGroupDragEnd();
+      const moved = activeDrag.commit();
+      if (drag.crossLayer && onGroupDragEnd) {
+        const more = onGroupDragEnd(); // sections moved with this group
+        if (Array.isArray(more)) moved.push(...more);
+      }
+      recordMove(moved);
       drag = null;
     }
     window.removeEventListener("mousemove", onDrag);
@@ -259,8 +276,10 @@ export function createNodeLayer({
     if (containedDrag.apply(dx, dy)) onChange();
   }
 
+  // Returns the moved descriptors so the driving section layer can fold the
+  // contained nodes into its single move-undo command.
   function commitContainedMove() {
-    containedDrag.commit();
+    return containedDrag.commit();
   }
 
   /* ---- resizing (bottom-right handle) ---- */
@@ -289,10 +308,23 @@ export function createNodeLayer({
 
   function endResize() {
     if (resize) {
-      persist(resize.node, {
-        w: Math.round(resize.node.w),
-        h: Math.round(resize.node.h),
-      });
+      const node = resize.node;
+      const from = { w: Math.round(resize.ow), h: Math.round(resize.oh) };
+      const to = { w: Math.round(node.w), h: Math.round(node.h) };
+      persist(node, to);
+      if (history && (from.w !== to.w || from.h !== to.h)) {
+        history.push({
+          label: "resize node",
+          undo: () => {
+            node.w = from.w;
+            node.h = from.h;
+            node.el.style.width = from.w + "px";
+            node.el.style.height = from.h + "px";
+            persist(node, from);
+            onChange();
+          },
+        });
+      }
       resize = null;
     }
     window.removeEventListener("mousemove", onResize);
@@ -399,6 +431,66 @@ export function createNodeLayer({
     return true;
   }
 
+  /* ---- copy / paste ---- */
+  // Snapshot the currently-selected note(s) — the marquee group if there is one,
+  // otherwise the single selection — as plain data the caller can stash on a
+  // clipboard. Returns [] when nothing is selected.
+  function copySelected() {
+    const group = sel.getGroup();
+    const chosen = group.length ? group : sel.getSelected() ? [sel.getSelected()] : [];
+    return chosen.map((n) => ({
+      name: n.name,
+      content: n.content,
+      x: n.x,
+      y: n.y,
+      w: n.w,
+      h: n.h,
+    }));
+  }
+
+  // Recreate clipboard items, anchoring their top-left bounding corner at the
+  // given world point and preserving their relative layout. The new copies come
+  // in selected so they can be dragged straight away.
+  async function pasteAt(items, wx, wy) {
+    if (!items || !items.length) return;
+    const minX = Math.min(...items.map((i) => i.x));
+    const minY = Math.min(...items.map((i) => i.y));
+    const created = [];
+    for (const it of items) {
+      const node = await createNodeAt(wx + (it.x - minX), wy + (it.y - minY), {
+        content: it.content,
+        name: it.name,
+        w: it.w,
+        h: it.h,
+      });
+      if (node) created.push(node);
+    }
+    if (created.length === 1) select(created[0]);
+    else if (created.length > 1) sel.setGroup(created);
+
+    // Undo a paste by removing exactly the notes it created.
+    if (history && created.length) {
+      history.push({
+        label: created.length === 1 ? "paste note" : "paste " + created.length + " notes",
+        undo: async () => {
+          const bid = getBoardId();
+          for (const n of created) {
+            removeNode(n);
+            if (bid) {
+              try {
+                await api.deleteNode(bid, n.id);
+              } catch (err) {
+                console.error(err);
+              }
+            }
+          }
+          onChange();
+        },
+      });
+    }
+    onChange();
+  }
+
   // Minimal geometry for the minimap / recenter.
   function getRects() {
     return nodes.map((n) => ({ x: n.x, y: n.y, w: n.w, h: n.h }));
@@ -429,6 +521,8 @@ export function createNodeLayer({
     spawnAtWorld,
     createNodeAt,
     deleteSelected,
+    copySelected,
+    pasteAt,
     getRects,
     getExportNodes,
     getNodeRect,
