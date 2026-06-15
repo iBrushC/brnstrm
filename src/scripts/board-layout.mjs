@@ -1,31 +1,45 @@
-// Arrow-aware auto layout — a section-respecting force-directed arranger shared
-// by the agent CLI (`arrange`) and the in-app auto-arrange button. Pure: no DOM,
-// no network, so it runs unchanged in the browser and in Node.
+// Arrow-aware auto layout — a section-respecting arranger shared by the agent CLI
+// (`arrange`) and the in-app auto-arrange button. Pure: no DOM, no network, so it
+// runs unchanged in the browser and in Node.
 //
 // The board is a *nesting* of containers: the root holds top-level sections and
 // loose notes; each section holds its child sections and the notes it owns. We
-// lay out each container independently with a Fruchterman-Reingold pass (arrows
-// pull connected bodies together, every body repels every other) followed by a
-// rectangle-separation pass that guarantees no overlap. Sections are sized
-// bottom-up to wrap their laid-out contents, then placed top-down — so notes
-// always stay inside their section and the section grouping is preserved, while
-// arrows still shape the arrangement within and between groups.
+// lay out each container independently, then size sections bottom-up to wrap
+// their laid-out contents and place them top-down — so notes always stay inside
+// their section and the grouping is preserved.
 //
-// Three additional penalty forces reduce visual clutter:
-//   • crossing penalty  — when two edges cross, their midpoints are repelled so
-//                         the simulation cools into a less-tangled configuration;
-//   • occlusion penalty — when an edge segment passes close to a body that is not
-//                         one of its endpoints, that body is pushed away from the
-//                         segment so arrows don't disappear behind nodes/sections;
-//   • initial jitter    — a small random nudge at startup helps the solver escape
-//                         bad local optima (making the result non-deterministic but
-//                         consistently readable).
+// Within a container the goal is to approximate how a person arranges things, so
+// we use a *hybrid* strategy (layoutBodies):
+//   1. Split the bodies into connected components (following arrows, ignoring
+//      direction). Disconnected components never need to interleave.
+//   2. Bodies with no arrows at all are "loose" and get packed into a tidy grid
+//      (6 loose notes → a near-square 3×2 grid, not a random scatter).
+//   3. A component whose arrows form a DAG is drawn as a *layered* top-to-bottom
+//      tree: a directed arrow A→B places A above B, children are centered under
+//      their parents, and a barycenter pass orders each layer to reduce crossings.
+//      This is what makes "1 node branching to 3" read as a neat fan-out.
+//   4. A component that is cyclic or unusually dense falls back to the original
+//      force-directed solver (forceLayout) — organic, but the only thing that
+//      copes with tangled graphs. Its startup jitter is seeded deterministically
+//      so repeated arranges of the same board are stable.
+//   5. The per-component blocks and the loose grid are themselves packed into a
+//      grid of blocks, then a rectangle-separation pass guarantees zero overlap.
+//
+// The layered + grid paths are fully deterministic, so "consistent alignment" and
+// "consistent layouts even with constraints" hold: the same board arranges the
+// same way every time, and unconstrained nodes align rather than scatter.
 
 const PAD = 32; // breathing room inside a container, around its contents
 const GAP = 28; // minimum gap enforced between any two bodies
 const HEADER = 44; // space reserved under a section's label
 const MIN_SEC_W = 240;
 const MIN_SEC_H = 160;
+
+// Hybrid-layout spacing.
+const HGAP = 36; // horizontal gap between siblings within a layer
+const VGAP = 72; // vertical gap between layers (generous so arrows read top→down)
+const GRID_GAP = GAP; // gap between loose nodes packed into a grid
+const BLOCK_GAP = 56; // gap between independent components / the loose grid
 
 const area = (r) => Math.max(0, r.w) * Math.max(0, r.h);
 const contains = (o, i) =>
@@ -76,25 +90,186 @@ function separate(bodies) {
   }
 }
 
-// Damped spring-electrical layout on center-positioned bodies (a small d3-force-
-// style simulation). Five forces, each scaled by a cooling `alpha`:
-//   • repulsion  — every pair pushes apart with a ~1/d falloff (clamped at short
-//                  range so coincident bodies can't be flung to infinity);
-//   • springs    — each edge pulls its endpoints toward a rest length L;
-//   • gravity    — every body is drawn to the group's centroid;
-//   • crossings  — when two edges cross, their midpoints repel each other so the
-//                  simulation cools into a configuration with fewer crossings;
-//   • occlusion  — when an edge passes close to a body that isn't its endpoint,
-//                  that body is nudged away from the segment.
-// Gravity is what the old Fruchterman-Reingold pass lacked: without it, anything
-// weakly connected drifts outward forever (repulsion has no counter-force). With
-// it the layout settles at a radius ~sqrt(n). Velocities carry momentum but decay
-// each tick. A final separation pass guarantees zero overlap.
-function layoutBodies(bodies, edges) {
+// Deterministic [0,1) hash — stands in for Math.random() so the force fallback's
+// startup jitter is stable across runs (the same board arranges the same way).
+function hash01(k) {
+  const s = Math.sin(k * 12.9898) * 43758.5453;
+  return s - Math.floor(s);
+}
+
+// Split a set of center-positioned bodies into connected components, following
+// `edges` (directed [from,to] id pairs) but ignoring direction for connectivity.
+// Returns { comps: [{nodes, edges}], loose } where each comp's `edges` are
+// directed pairs of *local* indices into that comp's `nodes`, and `loose` is the
+// bodies that have no arrows at all (singleton components with no edges).
+function components(bodies, edges) {
+  const n = bodies.length;
+  const idx = new Map(bodies.map((b, i) => [b.id, i]));
+  const de = edges
+    .map(([a, b]) => [idx.get(a), idx.get(b)])
+    .filter(([i, j]) => i !== undefined && j !== undefined && i !== j);
+
+  const adj = Array.from({ length: n }, () => new Set());
+  for (const [i, j] of de) { adj[i].add(j); adj[j].add(i); }
+
+  const comp = new Array(n).fill(-1);
+  let nc = 0;
+  for (let s = 0; s < n; s++) {
+    if (comp[s] !== -1) continue;
+    const stack = [s];
+    comp[s] = nc;
+    while (stack.length) {
+      const u = stack.pop();
+      for (const v of adj[u]) if (comp[v] === -1) { comp[v] = nc; stack.push(v); }
+    }
+    nc++;
+  }
+
+  const members = Array.from({ length: nc }, () => []);
+  for (let i = 0; i < n; i++) members[comp[i]].push(i);
+  const edgesByComp = Array.from({ length: nc }, () => []);
+  for (const [i, j] of de) edgesByComp[comp[i]].push([i, j]);
+
+  const comps = [];
+  const loose = [];
+  for (let c = 0; c < nc; c++) {
+    const g = members[c];
+    if (g.length === 1 && adj[g[0]].size === 0) { loose.push(bodies[g[0]]); continue; }
+    const local = new Map(g.map((gi, k) => [gi, k]));
+    comps.push({
+      nodes: g.map((gi) => bodies[gi]),
+      edges: edgesByComp[c].map(([i, j]) => [local.get(i), local.get(j)]),
+    });
+  }
+  return { comps, loose };
+}
+
+// Layered top-to-bottom layout for a component whose arrows form a DAG. Mutates
+// each node's center (x, y). A directed arrow A→B puts A in an earlier (higher)
+// layer than B; siblings are barycenter-ordered to cut crossings and centered
+// under their parents. Returns false (without moving anything) if the arrows
+// contain a cycle, so the caller can fall back to the force solver.
+function layeredLayout(nodes, edges) {
+  const n = nodes.length;
+  const out = Array.from({ length: n }, () => []);
+  const inc = Array.from({ length: n }, () => []);
+  for (const [u, v] of edges) { out[u].push(v); inc[v].push(u); }
+
+  // Longest-path layering via Kahn's algorithm; bails (returns false) on a cycle.
+  const layer = new Array(n).fill(0);
+  const indeg = inc.map((a) => a.length);
+  const queue = [];
+  for (let i = 0; i < n; i++) if (indeg[i] === 0) queue.push(i);
+  let processed = 0;
+  for (let head = 0; head < queue.length; head++) {
+    const u = queue[head];
+    processed++;
+    for (const v of out[u]) {
+      if (layer[u] + 1 > layer[v]) layer[v] = layer[u] + 1;
+      if (--indeg[v] === 0) queue.push(v);
+    }
+  }
+  if (processed < n) return false; // cycle → force fallback
+
+  const maxL = Math.max(...layer);
+  const layers = Array.from({ length: maxL + 1 }, () => []);
+  for (let i = 0; i < n; i++) layers[layer[i]].push(i);
+
+  // Crossing reduction: alternate down/up barycenter sweeps, reordering each
+  // layer by the average position of its neighbors in the adjacent layer.
+  const posInLayer = new Array(n);
+  const reindex = () => { for (const lay of layers) lay.forEach((id, k) => { posInLayer[id] = k; }); };
+  reindex();
+  const sortByBary = (lay, neigh) => {
+    const bary = new Map();
+    for (const id of lay) {
+      const ns = neigh[id];
+      bary.set(id, ns.length ? ns.reduce((a, p) => a + posInLayer[p], 0) / ns.length : posInLayer[id]);
+    }
+    lay.sort((a, b) => bary.get(a) - bary.get(b));
+    lay.forEach((id, k) => { posInLayer[id] = k; });
+  };
+  for (let sweep = 0; sweep < 4; sweep++) {
+    for (let l = 1; l <= maxL; l++) sortByBary(layers[l], inc);
+    for (let l = maxL - 1; l >= 0; l--) sortByBary(layers[l], out);
+  }
+
+  // Vertical: stack layers top→down, each row as tall as its tallest node.
+  let y = 0;
+  for (let l = 0; l <= maxL; l++) {
+    const rowH = Math.max(...layers[l].map((id) => nodes[id].h));
+    const cy = y + rowH / 2;
+    for (const id of layers[l]) nodes[id].y = cy;
+    y += rowH + VGAP;
+  }
+
+  // Horizontal: seed left→right, then iteratively pull each node toward the mean
+  // x of its neighbors while keeping order + min gap. Centering the whole layer on
+  // the neighbors' mean keeps children fanned out symmetrically under a parent.
+  for (const lay of layers) {
+    let x = 0;
+    for (const id of lay) { nodes[id].x = x + nodes[id].w / 2; x += nodes[id].w + HGAP; }
+  }
+  const alignToward = (neigh) => {
+    for (const lay of layers) {
+      if (lay.length === 0) continue;
+      const desired = lay.map((id) => {
+        const ns = neigh[id];
+        return ns.length ? ns.reduce((a, p) => a + nodes[p].x, 0) / ns.length : nodes[id].x;
+      });
+      for (let k = 0; k < lay.length; k++) nodes[lay[k]].x = desired[k];
+      // Resolve overlaps left→right, preserving order and min gap.
+      for (let k = 1; k < lay.length; k++) {
+        const prev = nodes[lay[k - 1]], cur = nodes[lay[k]];
+        const minX = prev.x + (prev.w + cur.w) / 2 + HGAP;
+        if (cur.x < minX) cur.x = minX;
+      }
+      // Re-center the (now valid) layer on where the neighbors wanted it.
+      let want = 0, have = 0;
+      for (let k = 0; k < lay.length; k++) { want += desired[k]; have += nodes[lay[k]].x; }
+      const shift = (want - have) / lay.length;
+      for (const id of lay) nodes[id].x += shift;
+    }
+  };
+  for (let it = 0; it < 6; it++) { alignToward(inc); alignToward(out); }
+  return true;
+}
+
+// Pack arrow-less bodies into a tidy near-square grid (mutates each center). Six
+// loose notes become a 3×2 grid rather than a scattered cloud. Columns share a
+// width and rows share a height so everything aligns.
+function gridLayout(items) {
+  const n = items.length;
+  if (n === 0) return;
+  if (n === 1) { items[0].x = items[0].w / 2; items[0].y = items[0].h / 2; return; }
+  const cols = Math.ceil(Math.sqrt(n));
+  const rows = Math.ceil(n / cols);
+  const colW = new Array(cols).fill(0);
+  const rowH = new Array(rows).fill(0);
+  items.forEach((it, i) => {
+    const c = i % cols, r = Math.floor(i / cols);
+    colW[c] = Math.max(colW[c], it.w);
+    rowH[r] = Math.max(rowH[r], it.h);
+  });
+  const colX = []; let x = 0;
+  for (let c = 0; c < cols; c++) { colX[c] = x + colW[c] / 2; x += colW[c] + GRID_GAP; }
+  const rowY = []; let y = 0;
+  for (let r = 0; r < rows; r++) { rowY[r] = y + rowH[r] / 2; y += rowH[r] + GRID_GAP; }
+  items.forEach((it, i) => {
+    const c = i % cols, r = Math.floor(i / cols);
+    it.x = colX[c];
+    it.y = rowY[r];
+  });
+}
+
+// Force-directed fallback for cyclic / dense components — the original damped
+// spring-electrical solver (repulsion, springs, gravity, crossing + occlusion
+// penalties), now operating on a component's local nodes with edges given as
+// local index pairs (direction ignored). Startup jitter is deterministic.
+function forceLayout(bodies, eidx) {
   const n = bodies.length;
   if (n <= 1) return;
 
-  // Nudge any exactly-coincident bodies apart so unit vectors never divide by zero.
   for (let i = 0; i < n; i++) {
     for (let j = i + 1; j < n; j++) {
       if (bodies[i].x === bodies[j].x && bodies[i].y === bodies[j].y) {
@@ -104,7 +279,6 @@ function layoutBodies(bodies, edges) {
     }
   }
 
-  const idx = new Map(bodies.map((b, i) => [b.id, i]));
   const avg = bodies.reduce((a, b) => a + (b.w + b.h) / 2, 0) / n;
   const L = avg + GAP;
   const repK = 0.9 * L * L;
@@ -113,8 +287,8 @@ function layoutBodies(bodies, edges) {
   const velDecay = 0.6;
   const minDist = 0.5 * L;
   const maxStep = L;
-  const crossK = L * 0.8;  // midpoint-repulsion strength per crossing
-  const occK   = L * 0.7;  // repulsion strength per occluding body-edge pair
+  const crossK = L * 0.8;
+  const occK = L * 0.7;
 
   const iters = Math.min(800, 350 + n * 14);
   const alphaDecay = 1 - Math.pow(0.001, 1 / iters);
@@ -123,23 +297,11 @@ function layoutBodies(bodies, edges) {
   const vx = new Array(n).fill(0);
   const vy = new Array(n).fill(0);
 
-  // Pre-resolve edge indices (skip dangling references once, not every iteration).
-  const eidx = edges
-    .map(([a, b]) => [idx.get(a), idx.get(b)])
-    .filter(([i, j]) => i !== undefined && j !== undefined);
-
-  // Bodies that participate in at least one edge at this layout level. Bodies
-  // outside this set have no arrows here and can pack more tightly.
-  const connectedSet = new Set();
-  for (const [i, j] of eidx) { connectedSet.add(i); connectedSet.add(j); }
-
-  // Small random jitter to help the solver escape bad local optima. The result is
-  // intentionally non-deterministic; every arrange call produces a readable layout
-  // that may differ slightly from a prior run.
+  // Deterministic startup jitter to escape symmetric local optima.
   const jitter = L * 0.25;
   for (let i = 0; i < n; i++) {
-    bodies[i].x += (Math.random() - 0.5) * jitter;
-    bodies[i].y += (Math.random() - 0.5) * jitter;
+    bodies[i].x += (hash01(i * 2 + 1) - 0.5) * jitter;
+    bodies[i].y += (hash01(i * 2 + 2) - 0.5) * jitter;
   }
 
   for (let it = 0; it < iters; it++) {
@@ -148,19 +310,13 @@ function layoutBodies(bodies, edges) {
     cx /= n; cy /= n;
 
     // Repulsion (~1/d), clamped so very-close bodies push gently, not violently.
-    // Pairs where neither body has an arrow at this level use a much weaker
-    // repulsion so they pack tightly (the final separate() still prevents overlap).
-    // Pairs where only one has an arrow use an intermediate strength.
     for (let i = 0; i < n; i++) {
       for (let j = i + 1; j < n; j++) {
-        const ci = connectedSet.has(i), cj = connectedSet.has(j);
-        const rk = (ci && cj) ? repK : (ci || cj) ? repK * 0.45 : repK * 0.12;
-        const md = (ci || cj) ? minDist : minDist * 0.35;
         let dx = bodies[i].x - bodies[j].x;
         let dy = bodies[i].y - bodies[j].y;
         const dist = Math.hypot(dx, dy) || 0.01;
-        const eff = dist < md ? md : dist;
-        const f = (rk * alpha) / eff;
+        const eff = dist < minDist ? minDist : dist;
+        const f = (repK * alpha) / eff;
         const ux = dx / dist, uy = dy / dist;
         vx[i] += ux * f; vy[i] += uy * f;
         vx[j] -= ux * f; vy[j] -= uy * f;
@@ -185,7 +341,6 @@ function layoutBodies(bodies, edges) {
     }
 
     // Edge-crossing penalty: when two edges properly cross, repel their midpoints.
-    // Each endpoint receives half the midpoint force, so the edges rotate apart.
     for (let e1 = 0; e1 < eidx.length; e1++) {
       for (let e2 = e1 + 1; e2 < eidx.length; e2++) {
         const [i1, j1] = eidx[e1];
@@ -202,7 +357,6 @@ function layoutBodies(bodies, edges) {
         const u = (acx * aby - acy * abx) / denom;
         if (t <= 0.05 || t >= 0.95 || u <= 0.05 || u >= 0.95) continue;
 
-        // Direction from CD-midpoint to AB-midpoint.
         let ddx = (A.x + B.x) * 0.5 - (C.x + D.x) * 0.5;
         let ddy = (A.y + B.y) * 0.5 - (C.y + D.y) * 0.5;
         const md = Math.hypot(ddx, ddy) || 0.01;
@@ -215,9 +369,7 @@ function layoutBodies(bodies, edges) {
       }
     }
 
-    // Edge-body occlusion penalty: push bodies away from edges that pass close to
-    // them. Only the middle portion of each segment is tested (t ∈ [0.1, 0.9]) —
-    // normal body-repulsion already handles proximity near the endpoints.
+    // Edge-body occlusion penalty: push bodies away from edges passing close by.
     for (const [i, j] of eidx) {
       const A = bodies[i], B = bodies[j];
       const abx = B.x - A.x, aby = B.y - A.y;
@@ -233,7 +385,6 @@ function layoutBodies(bodies, edges) {
         const px = A.x + t * abx, py = A.y + t * aby;
         let ddx = C.x - px, ddy = C.y - py;
         const dist = Math.hypot(ddx, ddy) || 0.01;
-        // Push when the arrow comes within ~1/3 of C's diagonal plus a gap margin.
         const thresh = (C.w + C.h) * 0.3 + GAP;
         if (dist < thresh) {
           const f = occK * (thresh - dist) / thresh * alpha;
@@ -254,6 +405,44 @@ function layoutBodies(bodies, edges) {
     }
     alpha *= 1 - alphaDecay;
   }
+
+  separate(bodies);
+}
+
+// Hybrid container layout (see file header). Splits bodies into components, lays
+// each out with the most human-like strategy that fits (grid for arrow-less
+// nodes, layered top-to-bottom for DAGs, force-directed for cyclic/dense graphs),
+// then packs the resulting blocks into a grid and separates any overlap.
+function layoutBodies(bodies, edges) {
+  const n = bodies.length;
+  if (n <= 1) return;
+
+  const { comps, loose } = components(bodies, edges);
+
+  // Lay out every component in its own local coordinate space.
+  const blocks = []; // each: array of body refs (now positioned in local coords)
+  for (const { nodes, edges: localEdges } of comps) {
+    const dense = localEdges.length > nodes.length * 2;
+    let ok = false;
+    if (!dense) ok = layeredLayout(nodes, localEdges);
+    if (!ok) forceLayout(nodes, localEdges);
+    blocks.push(nodes);
+  }
+  // All arrow-less bodies share one grid block.
+  if (loose.length) { gridLayout(loose); blocks.push(loose); }
+
+  // Pack the independent blocks into a grid of blocks (they share no arrows, so
+  // alignment is all that matters). Translate each block's bodies into place.
+  const boxes = blocks.map((nodes) => ({ nodes, box: bboxOf(nodes) }));
+  const cols = Math.max(1, Math.ceil(Math.sqrt(boxes.length)));
+  let bx = 0, by = 0, rowH = 0;
+  boxes.forEach((blk, i) => {
+    if (i > 0 && i % cols === 0) { by += rowH + BLOCK_GAP; bx = 0; rowH = 0; }
+    const dx = bx - blk.box.minX, dy = by - blk.box.minY;
+    for (const nd of blk.nodes) { nd.x += dx; nd.y += dy; }
+    bx += blk.box.w + BLOCK_GAP;
+    rowH = Math.max(rowH, blk.box.h);
+  });
 
   separate(bodies);
 }
@@ -323,6 +512,10 @@ export function arrangeBoard(model) {
     }
     return null;
   }
+  // Directed edges [from, to] between bodies at this container's level. Direction
+  // is preserved (the layered layout reads from→to as above→below); duplicate
+  // arrows in the same direction collapse to one, but A→B and B→A both survive so
+  // a true cycle is visible to the layout (and routes it to the force fallback).
   function edgesFor(bodyList) {
     const idSet = new Set(bodyList.map((b) => b.id));
     const seen = new Set();
@@ -331,7 +524,7 @@ export function arrangeBoard(model) {
       const a = bodyInContainer(c.from, idSet);
       const b = bodyInContainer(c.to, idSet);
       if (a && b && a !== b) {
-        const key = a < b ? a + "|" + b : b + "|" + a;
+        const key = a + ">" + b;
         if (!seen.has(key)) { seen.add(key); edges.push([a, b]); }
       }
     }
