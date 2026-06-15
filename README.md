@@ -30,4 +30,27 @@ These cards let you express ideas more effectively. These can be used in a multi
 3. Giving other team members and agents a consistent multimodal knowledge base of the project
 
 ## Agentic Brainstorming
-In the future, you'll be able to brainstorm with agents, defining the general system then breaking it into manageable, well-defined chunks and systems before executing.
+Coding agents can read and write boards directly through a headless CLI — no
+browser or running server needed. This lets you brainstorm with an agent: lay
+out a system, have the agent review it, expand it into well-defined chunks, or
+turn a plan it wrote into a board you can see.
+
+```
+node bin/brnstrm.mjs help              # full command list
+node bin/brnstrm.mjs list               # list boards
+node bin/brnstrm.mjs read <board>       # board → agent-ready markdown
+node bin/brnstrm.mjs add-note <board> --name "API" --section "Backend" --content "..."
+node bin/brnstrm.mjs connect <board> --from "Goals" --to "API" --label "drives"
+node bin/brnstrm.mjs arrange <board>    # arrow-aware auto layout
+```
+
+The same arrow-aware layout is a click away in the UI — the **arrange** button
+next to **recenter** force-directs the current board, pulling connected notes
+together while keeping each note inside its section (with one-tap undo).
+
+Every mutation runs through the same storage layer the UI uses (so section
+folders and arrows stay consistent), and boards are plain git-tracked files, so
+agent edits are reviewable with `git diff` and reversible like any other change.
+
+For Claude Code, the bundled skill at `.claude/skills/brnstrm/` teaches the
+read → reason → write loop automatically.

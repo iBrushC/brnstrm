@@ -927,6 +927,7 @@ body.connecting #canvas * {
 }
 
 #recenter,
+#auto-arrange,
 #zoom-level {
   font-size: 12px;
   color: var(--text-dim);
@@ -936,14 +937,21 @@ body.connecting #canvas * {
   padding: 4px 8px;
 }
 
-#recenter {
+#recenter,
+#auto-arrange {
   font-family: inherit;
   cursor: pointer;
 }
 
-#recenter:hover {
+#recenter:hover,
+#auto-arrange:hover {
   color: var(--text);
   border-color: var(--accent);
+}
+
+#auto-arrange.busy {
+  opacity: 0.6;
+  pointer-events: none;
 }
 
 #zoom-level {

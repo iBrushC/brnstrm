@@ -10,6 +10,7 @@ import { createBoardBar } from "./boards.js";
 import { createHistory } from "./history.js";
 import { createRadialMenu } from "./radial.js";
 import { createExporter } from "./llm-export.js";
+import { arrangeBoard } from "./board-layout.mjs";
 import { toast } from "./toast.js";
 
 /* ---------------- Theme ---------------- */
@@ -175,6 +176,92 @@ function recenter() {
 }
 
 document.getElementById("recenter").addEventListener("click", recenter);
+
+/* ---------------- Auto-arrange ---------------- */
+// Arrow-aware force-directed layout, the same engine the agent CLI's `arrange`
+// command uses (board-layout.mjs). Persist only the boxes that actually moved
+// (sections largest-first, so the server's folder reconcile never sees a note
+// momentarily outside its section), reload, and offer a one-tap Undo.
+const arrangeBtn = document.getElementById("auto-arrange");
+
+async function applyGeometry(id, secs, nodes) {
+  const ordered = secs.slice().sort((a, b) => b.w * b.h - a.w * a.h);
+  for (const s of ordered) {
+    await api.updateSection(id, s.id, { x: s.x, y: s.y, w: s.w, h: s.h });
+  }
+  for (const n of nodes) await api.updateNode(id, n.id, { x: n.x, y: n.y });
+}
+
+async function reloadBoard(id) {
+  const data = await api.getBoard(id);
+  nodeLayer.load(data.nodes);
+  sections.load(data.sections);
+  connections.load(data.connections);
+  render();
+}
+
+async function autoArrange() {
+  const id = boards.current();
+  if (!id) return;
+  const exportNodes = nodeLayer.getExportNodes();
+  const exportSections = sections.getExportSections();
+  if (!exportNodes.length && !exportSections.length) return;
+
+  const next = arrangeBoard({
+    nodes: exportNodes,
+    sections: exportSections,
+    connections: connections.getExportConnections(),
+  });
+
+  const beforeN = new Map(exportNodes.map((n) => [n.id, { x: n.x, y: n.y }]));
+  const beforeS = new Map(
+    exportSections.map((s) => [s.id, { x: s.x, y: s.y, w: s.w, h: s.h }])
+  );
+  const changedSecs = next.sections.filter((s) => {
+    const b = beforeS.get(s.id);
+    return b && (b.x !== s.x || b.y !== s.y || b.w !== s.w || b.h !== s.h);
+  });
+  const changedNodes = next.nodes.filter((n) => {
+    const b = beforeN.get(n.id);
+    return b && (b.x !== n.x || b.y !== n.y);
+  });
+  if (!changedSecs.length && !changedNodes.length) {
+    toast("Already arranged");
+    return;
+  }
+
+  arrangeBtn.classList.add("busy");
+  try {
+    await applyGeometry(id, changedSecs, changedNodes);
+    await reloadBoard(id);
+    recenter();
+    toast("Arranged by arrows", {
+      onUndo: async () => {
+        arrangeBtn.classList.add("busy");
+        try {
+          await applyGeometry(
+            id,
+            changedSecs.map((s) => ({ id: s.id, ...beforeS.get(s.id) })),
+            changedNodes.map((n) => ({ id: n.id, ...beforeN.get(n.id) }))
+          );
+          await reloadBoard(id);
+          recenter();
+        } catch (err) {
+          console.error(err);
+        } finally {
+          arrangeBtn.classList.remove("busy");
+        }
+      },
+    });
+  } catch (err) {
+    console.error(err);
+    toast("Arrange failed");
+  } finally {
+    arrangeBtn.classList.remove("busy");
+  }
+}
+
+arrangeBtn.addEventListener("click", autoArrange);
 
 /* ---------------- Pan & zoom ---------------- */
 canvas.addEventListener(

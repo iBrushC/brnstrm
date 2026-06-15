@@ -106,6 +106,23 @@ function boardExists(id) {
   return boardEntries().some((e) => e.id === id);
 }
 
+// Resolve a user/agent-supplied board reference to its stable id. Accepts the
+// id, the on-disk folder slug, or the display name (case-insensitive) — so the
+// CLI can take whatever a human typed without forcing them to look up ids.
+// Returns null when nothing matches.
+function resolveBoardId(ref) {
+  const entries = boardEntries();
+  const want = String(ref || "").trim();
+  if (!want) return null;
+  const byId = entries.find((e) => e.id === want);
+  if (byId) return byId.id;
+  const byDir = entries.find((e) => e.dir === want);
+  if (byDir) return byDir.id;
+  const lower = want.toLowerCase();
+  const byName = entries.find((e) => (e.name || "").toLowerCase() === lower);
+  return byName ? byName.id : null;
+}
+
 function boardDir(id) {
   return path.join(STORAGE, boardDirName(id));
 }
@@ -998,4 +1015,27 @@ async function handleApi(req, res, pathname) {
   }
 }
 
-module.exports = { STORAGE, initStorage, handleApi };
+module.exports = {
+  STORAGE,
+  initStorage,
+  handleApi,
+  // Board model — exposed so the agent CLI (bin/brnstrm.mjs) can drive the same
+  // reconcile/prune logic the HTTP API uses, without a running server.
+  resolveBoardId,
+  listBoards,
+  createBoard,
+  renameBoard,
+  deleteBoard,
+  getBoard,
+  createNode,
+  updateNode,
+  deleteNode,
+  createSection,
+  updateSection,
+  deleteSection,
+  createConnection,
+  updateConnection,
+  deleteConnection,
+  listResources,
+  resolveResource,
+};
