@@ -11,9 +11,15 @@
 // always stay inside their section and the section grouping is preserved, while
 // arrows still shape the arrangement within and between groups.
 //
-// Deterministic: it starts from the current positions and uses no randomness, so
-// the same board always arranges the same way (clean git diffs) and re-running
-// it is stable rather than jittery.
+// Three additional penalty forces reduce visual clutter:
+//   • crossing penalty  — when two edges cross, their midpoints are repelled so
+//                         the simulation cools into a less-tangled configuration;
+//   • occlusion penalty — when an edge segment passes close to a body that is not
+//                         one of its endpoints, that body is pushed away from the
+//                         segment so arrows don't disappear behind nodes/sections;
+//   • initial jitter    — a small random nudge at startup helps the solver escape
+//                         bad local optima (making the result non-deterministic but
+//                         consistently readable).
 
 const PAD = 32; // breathing room inside a container, around its contents
 const GAP = 28; // minimum gap enforced between any two bodies
@@ -71,24 +77,24 @@ function separate(bodies) {
 }
 
 // Damped spring-electrical layout on center-positioned bodies (a small d3-force-
-// style simulation). Three forces, each scaled by a cooling `alpha`:
+// style simulation). Five forces, each scaled by a cooling `alpha`:
 //   • repulsion  — every pair pushes apart with a ~1/d falloff (clamped at short
 //                  range so coincident bodies can't be flung to infinity);
 //   • springs    — each edge pulls its endpoints toward a rest length L;
-//   • gravity    — every body is drawn to the group's centroid.
+//   • gravity    — every body is drawn to the group's centroid;
+//   • crossings  — when two edges cross, their midpoints repel each other so the
+//                  simulation cools into a configuration with fewer crossings;
+//   • occlusion  — when an edge passes close to a body that isn't its endpoint,
+//                  that body is nudged away from the segment.
 // Gravity is what the old Fruchterman-Reingold pass lacked: without it, anything
-// weakly connected drifts outward forever (repulsion has no counter-force), which
-// is why boards exploded to hundreds of thousands of pixels. With it, the layout
-// settles at a radius ~sqrt(n) — compact and bounded for any node count.
-// Velocities carry momentum but decay each tick, so the system converges instead
-// of oscillating. Deterministic: positions start from the current layout and no
-// randomness is used. A final separation pass guarantees zero overlap.
+// weakly connected drifts outward forever (repulsion has no counter-force). With
+// it the layout settles at a radius ~sqrt(n). Velocities carry momentum but decay
+// each tick. A final separation pass guarantees zero overlap.
 function layoutBodies(bodies, edges) {
   const n = bodies.length;
   if (n <= 1) return;
 
-  // Nudge any exactly-coincident bodies apart deterministically so the unit
-  // vectors below never divide by zero (e.g. a fresh board, all notes stacked).
+  // Nudge any exactly-coincident bodies apart so unit vectors never divide by zero.
   for (let i = 0; i < n; i++) {
     for (let j = i + 1; j < n; j++) {
       if (bodies[i].x === bodies[j].x && bodies[i].y === bodies[j].y) {
@@ -100,24 +106,36 @@ function layoutBodies(bodies, edges) {
 
   const idx = new Map(bodies.map((b, i) => [b.id, i]));
   const avg = bodies.reduce((a, b) => a + (b.w + b.h) / 2, 0) / n;
-  const L = avg + GAP; // desired distance between neighbouring bodies
-  const repK = 0.9 * L * L; // repulsion strength (balances springs near ~1.3·L)
-  const springK = 0.5; // spring stiffness toward rest length L
-  // Gravity scales with repK (both ∝ L²), so the equilibrium radius stays a small
-  // multiple of L at any L — the layout is compact whether bodies are tiny notes
-  // or large wrapped sections. 0.9 keeps boards tight while arrows still cluster
-  // connected bodies noticeably closer than average.
-  const gravK = 0.9; // pull toward centroid — sets overall compactness
-  const velDecay = 0.6; // fraction of velocity retained each tick (friction)
-  const minDist = 0.5 * L; // clamp short-range repulsion to avoid blow-ups
-  const maxStep = L; // hard cap on per-tick movement (belt-and-braces)
+  const L = avg + GAP;
+  const repK = 0.9 * L * L;
+  const springK = 0.5;
+  const gravK = 0.9;
+  const velDecay = 0.6;
+  const minDist = 0.5 * L;
+  const maxStep = L;
+  const crossK = L * 0.8;  // midpoint-repulsion strength per crossing
+  const occK   = L * 0.7;  // repulsion strength per occluding body-edge pair
 
-  const iters = Math.min(700, 300 + n * 12);
+  const iters = Math.min(800, 350 + n * 14);
   const alphaDecay = 1 - Math.pow(0.001, 1 / iters);
   let alpha = 1;
 
   const vx = new Array(n).fill(0);
   const vy = new Array(n).fill(0);
+
+  // Pre-resolve edge indices (skip dangling references once, not every iteration).
+  const eidx = edges
+    .map(([a, b]) => [idx.get(a), idx.get(b)])
+    .filter(([i, j]) => i !== undefined && j !== undefined);
+
+  // Small random jitter to help the solver escape bad local optima. The result is
+  // intentionally non-deterministic; every arrange call produces a readable layout
+  // that may differ slightly from a prior run.
+  const jitter = L * 0.25;
+  for (let i = 0; i < n; i++) {
+    bodies[i].x += (Math.random() - 0.5) * jitter;
+    bodies[i].y += (Math.random() - 0.5) * jitter;
+  }
 
   for (let it = 0; it < iters; it++) {
     let cx = 0, cy = 0;
@@ -129,7 +147,7 @@ function layoutBodies(bodies, edges) {
       for (let j = i + 1; j < n; j++) {
         let dx = bodies[i].x - bodies[j].x;
         let dy = bodies[i].y - bodies[j].y;
-        let dist = Math.hypot(dx, dy) || 0.01;
+        const dist = Math.hypot(dx, dy) || 0.01;
         const eff = dist < minDist ? minDist : dist;
         const f = (repK * alpha) / eff;
         const ux = dx / dist, uy = dy / dist;
@@ -137,23 +155,84 @@ function layoutBodies(bodies, edges) {
         vx[j] -= ux * f; vy[j] -= uy * f;
       }
     }
+
     // Springs: pull edge endpoints toward rest length L (push apart if closer).
-    for (const [a, b] of edges) {
-      const i = idx.get(a), j = idx.get(b);
-      if (i === undefined || j === undefined) continue;
-      let dx = bodies[j].x - bodies[i].x;
-      let dy = bodies[j].y - bodies[i].y;
+    for (const [i, j] of eidx) {
+      const dx = bodies[j].x - bodies[i].x;
+      const dy = bodies[j].y - bodies[i].y;
       const dist = Math.hypot(dx, dy) || 0.01;
       const f = springK * (dist - L) * alpha;
       const ux = dx / dist, uy = dy / dist;
       vx[i] += ux * f; vy[i] += uy * f;
       vx[j] -= ux * f; vy[j] -= uy * f;
     }
+
     // Gravity toward the centroid keeps the whole group from drifting apart.
     for (let i = 0; i < n; i++) {
       vx[i] += (cx - bodies[i].x) * gravK * alpha;
       vy[i] += (cy - bodies[i].y) * gravK * alpha;
     }
+
+    // Edge-crossing penalty: when two edges properly cross, repel their midpoints.
+    // Each endpoint receives half the midpoint force, so the edges rotate apart.
+    for (let e1 = 0; e1 < eidx.length; e1++) {
+      for (let e2 = e1 + 1; e2 < eidx.length; e2++) {
+        const [i1, j1] = eidx[e1];
+        const [i2, j2] = eidx[e2];
+        if (i1 === i2 || i1 === j2 || j1 === i2 || j1 === j2) continue;
+
+        const A = bodies[i1], B = bodies[j1], C = bodies[i2], D = bodies[j2];
+        const abx = B.x - A.x, aby = B.y - A.y;
+        const cdx = D.x - C.x, cdy = D.y - C.y;
+        const denom = abx * cdy - aby * cdx;
+        if (Math.abs(denom) < 1e-8) continue; // parallel / collinear
+        const acx = C.x - A.x, acy = C.y - A.y;
+        const t = (acx * cdy - acy * cdx) / denom;
+        const u = (acx * aby - acy * abx) / denom;
+        if (t <= 0.05 || t >= 0.95 || u <= 0.05 || u >= 0.95) continue;
+
+        // Direction from CD-midpoint to AB-midpoint.
+        let ddx = (A.x + B.x) * 0.5 - (C.x + D.x) * 0.5;
+        let ddy = (A.y + B.y) * 0.5 - (C.y + D.y) * 0.5;
+        const md = Math.hypot(ddx, ddy) || 0.01;
+        ddx /= md; ddy /= md;
+        const f = crossK * alpha;
+        vx[i1] += ddx * f; vy[i1] += ddy * f;
+        vx[j1] += ddx * f; vy[j1] += ddy * f;
+        vx[i2] -= ddx * f; vy[i2] -= ddy * f;
+        vx[j2] -= ddx * f; vy[j2] -= ddy * f;
+      }
+    }
+
+    // Edge-body occlusion penalty: push bodies away from edges that pass close to
+    // them. Only the middle portion of each segment is tested (t ∈ [0.1, 0.9]) —
+    // normal body-repulsion already handles proximity near the endpoints.
+    for (const [i, j] of eidx) {
+      const A = bodies[i], B = bodies[j];
+      const abx = B.x - A.x, aby = B.y - A.y;
+      const len2 = abx * abx + aby * aby;
+      if (len2 < 1e-10) continue;
+
+      for (let k = 0; k < n; k++) {
+        if (k === i || k === j) continue;
+        const C = bodies[k];
+        const t = Math.max(0.1, Math.min(0.9,
+          ((C.x - A.x) * abx + (C.y - A.y) * aby) / len2
+        ));
+        const px = A.x + t * abx, py = A.y + t * aby;
+        let ddx = C.x - px, ddy = C.y - py;
+        const dist = Math.hypot(ddx, ddy) || 0.01;
+        // Push when the arrow comes within ~1/3 of C's diagonal plus a gap margin.
+        const thresh = (C.w + C.h) * 0.3 + GAP;
+        if (dist < thresh) {
+          const f = occK * (thresh - dist) / thresh * alpha;
+          ddx /= dist; ddy /= dist;
+          vx[k] += ddx * f;
+          vy[k] += ddy * f;
+        }
+      }
+    }
+
     // Integrate with friction and a per-tick step cap.
     for (let i = 0; i < n; i++) {
       vx[i] *= velDecay; vy[i] *= velDecay;
