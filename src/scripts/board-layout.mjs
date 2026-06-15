@@ -128,6 +128,11 @@ function layoutBodies(bodies, edges) {
     .map(([a, b]) => [idx.get(a), idx.get(b)])
     .filter(([i, j]) => i !== undefined && j !== undefined);
 
+  // Bodies that participate in at least one edge at this layout level. Bodies
+  // outside this set have no arrows here and can pack more tightly.
+  const connectedSet = new Set();
+  for (const [i, j] of eidx) { connectedSet.add(i); connectedSet.add(j); }
+
   // Small random jitter to help the solver escape bad local optima. The result is
   // intentionally non-deterministic; every arrange call produces a readable layout
   // that may differ slightly from a prior run.
@@ -143,13 +148,19 @@ function layoutBodies(bodies, edges) {
     cx /= n; cy /= n;
 
     // Repulsion (~1/d), clamped so very-close bodies push gently, not violently.
+    // Pairs where neither body has an arrow at this level use a much weaker
+    // repulsion so they pack tightly (the final separate() still prevents overlap).
+    // Pairs where only one has an arrow use an intermediate strength.
     for (let i = 0; i < n; i++) {
       for (let j = i + 1; j < n; j++) {
+        const ci = connectedSet.has(i), cj = connectedSet.has(j);
+        const rk = (ci && cj) ? repK : (ci || cj) ? repK * 0.45 : repK * 0.12;
+        const md = (ci || cj) ? minDist : minDist * 0.35;
         let dx = bodies[i].x - bodies[j].x;
         let dy = bodies[i].y - bodies[j].y;
         const dist = Math.hypot(dx, dy) || 0.01;
-        const eff = dist < minDist ? minDist : dist;
-        const f = (repK * alpha) / eff;
+        const eff = dist < md ? md : dist;
+        const f = (rk * alpha) / eff;
         const ux = dx / dist, uy = dy / dist;
         vx[i] += ux * f; vy[i] += uy * f;
         vx[j] -= ux * f; vy[j] -= uy * f;
