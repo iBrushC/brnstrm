@@ -21,8 +21,20 @@
   "author": "Andrew Combs",
   "type": "commonjs",
   "main": "server.js",
+  "bin": {
+    "brnstrm": "bin/cli.mjs"
+  },
+  "files": [
+    "bin/",
+    "src/",
+    "server.js",
+    "storage.js",
+    "README.md",
+    "LICENSE"
+  ],
   "scripts": {
     "start": "node server.js",
+    "init": "node bin/install.mjs",
     "test": "node --test"
   }
 }

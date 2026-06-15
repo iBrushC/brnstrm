@@ -2,19 +2,29 @@
 We don't think in just text, why should we be restricted when making code? `brnstrm` is a simple workspace for brainstorming, planning, and managing implementation details for complex projects. Manage ideas, build diagrams, include references, and more, then hand off to your coding agent of choice to handle the implementation.
 
 ## Usage
-To install, just run
+Set `brnstrm` up in any project — Node or not — with one command:
 
 ```
-npm i brnstrm
+npx brnstrm init
 ```
 
-Then run
+This interactive setup:
+- creates a `.brnstrm/` folder where this project's boards live,
+- asks whether to track your boards in git (and edits `.gitignore` to match),
+- installs the brnstrm skill for the coding agent(s) you use (Claude Code,
+  Cursor, or a generic `AGENTS.md`), so they can read and write your boards.
+
+It only touches those things — nothing else. For scripts/CI it's also
+non-interactive: `npx brnstrm init --yes --no-git --agents=claude,cursor`.
+
+Then start the visual workspace:
 
 ```
 npx brnstrm
 ```
 
-to start the server. It will automatically start the workspace at `localhost:1098` where the workspace will be configured. 
+It serves the workspace at `localhost:8888`, backed by the `.brnstrm/` folder
+in your project.
 
 ## How It Works
 Each project has a set of *boards*, which manage ideas relating to your project. Within each board, *cards* represent ideas. Each card is a free-form text editor which allows you to enter the following data types:
@@ -36,12 +46,12 @@ out a system, have the agent review it, expand it into well-defined chunks, or
 turn a plan it wrote into a board you can see.
 
 ```
-node bin/brnstrm.mjs help              # full command list
-node bin/brnstrm.mjs list               # list boards
-node bin/brnstrm.mjs read <board>       # board → agent-ready markdown
-node bin/brnstrm.mjs add-note <board> --name "API" --section "Backend" --content "..."
-node bin/brnstrm.mjs connect <board> --from "Goals" --to "API" --label "drives"
-node bin/brnstrm.mjs arrange <board>    # arrow-aware auto layout
+npx brnstrm help                       # full command list
+npx brnstrm list                        # list boards
+npx brnstrm read <board>                # board → agent-ready markdown
+npx brnstrm add-note <board> --name "API" --section "Backend" --content "..."
+npx brnstrm connect <board> --from "Goals" --to "API" --label "drives"
+npx brnstrm arrange <board>             # arrow-aware auto layout
 ```
 
 The same arrow-aware layout is a click away in the UI — the **arrange** button
@@ -52,5 +62,5 @@ Every mutation runs through the same storage layer the UI uses (so section
 folders and arrows stay consistent), and boards are plain git-tracked files, so
 agent edits are reviewable with `git diff` and reversible like any other change.
 
-For Claude Code, the bundled skill at `.claude/skills/brnstrm/` teaches the
-read → reason → write loop automatically.
+`npx brnstrm init` installs this skill for your agent (Claude Code, Cursor, or a
+generic `AGENTS.md`), so the read → reason → write loop is taught automatically.

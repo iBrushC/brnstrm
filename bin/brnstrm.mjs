@@ -17,6 +17,7 @@
 // Run with no command (or `help`) for the full command list.
 
 import fs from "node:fs";
+import { pathToFileURL } from "node:url";
 import storage from "../storage.js";
 import {
   formatBoard,
@@ -25,8 +26,6 @@ import {
   nodeName,
 } from "../src/scripts/board-format.mjs";
 import { arrangeBoard } from "../src/scripts/board-layout.mjs";
-
-storage.initStorage();
 
 /* ---------------- tiny arg parser ---------------- */
 // Splits argv into positionals and --key value / --flag pairs. Values that look
@@ -491,17 +490,30 @@ the affected ids. Boards are plain files under data/ — use git to undo.
 `;
 
 /* ---------------- dispatch ---------------- */
-const [, , cmd, ...rest] = process.argv;
-const handler = commands[cmd];
-if (!cmd || cmd === "help" || cmd === "--help" || cmd === "-h") {
-  process.stdout.write(HELP);
-  process.exit(0);
+// Run the agent CLI for a given argv tail ([command, ...args]). Exported so the
+// unified `brnstrm` entry point (bin/cli.mjs) can forward agent commands here
+// without re-implementing the dispatch table.
+export { HELP };
+export function run(argv) {
+  storage.initStorage();
+  const [cmd, ...rest] = argv;
+  const handler = commands[cmd];
+  if (!cmd || cmd === "help" || cmd === "--help" || cmd === "-h") {
+    process.stdout.write(HELP);
+    return;
+  }
+  if (!handler) {
+    fail(`unknown command "${cmd}" — run \`help\` for the command list`);
+  }
+  try {
+    handler(parseArgs(rest));
+  } catch (err) {
+    fail(String(err && err.message ? err.message : err));
+  }
 }
-if (!handler) {
-  fail(`unknown command "${cmd}" — run \`help\` for the command list`);
-}
-try {
-  handler(parseArgs(rest));
-} catch (err) {
-  fail(String(err && err.message ? err.message : err));
+
+// Self-execute when invoked directly (e.g. `node bin/brnstrm.mjs read foo`),
+// but stay inert when imported by the dispatcher.
+if (import.meta.url === pathToFileURL(process.argv[1] || "").href) {
+  run(process.argv.slice(2));
 }

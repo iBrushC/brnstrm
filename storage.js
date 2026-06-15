@@ -25,8 +25,32 @@
 const fs = require("fs");
 const path = require("path");
 
-// Global storage root. Override with BRNSTRM_DATA to mirror elsewhere.
-const STORAGE = process.env.BRNSTRM_DATA || path.join(__dirname, "data");
+// Global storage root. Resolution order:
+//   1. BRNSTRM_DATA env var — explicit override, wins over everything.
+//   2. The nearest `.brnstrm/` folder found by walking up from the working
+//      directory. This is what `brnstrm init` creates in a consuming project,
+//      so boards live alongside the project's code rather than inside
+//      node_modules, and both the server and the agent CLI find them from any
+//      subdirectory.
+//   3. `<package>/data` — the dev fallback used when running from this repo.
+function resolveStorageRoot() {
+  if (process.env.BRNSTRM_DATA) return process.env.BRNSTRM_DATA;
+  let dir = process.env.INIT_CWD || process.cwd();
+  while (true) {
+    const candidate = path.join(dir, ".brnstrm");
+    try {
+      if (fs.statSync(candidate).isDirectory()) return candidate;
+    } catch {
+      /* not here — keep walking up */
+    }
+    const parent = path.dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
+  }
+  return path.join(__dirname, "data");
+}
+
+const STORAGE = resolveStorageRoot();
 
 // Board-root subfolders that are NOT sections and must be left untouched by
 // section reconciliation. Uploaded files live in `resources/`; without this
