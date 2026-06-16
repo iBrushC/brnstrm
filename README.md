@@ -47,10 +47,6 @@ npx brnstrm connect <board> --from "Goals" --to "API" --label "drives"
 npx brnstrm arrange <board>             # arrow-aware auto layout
 ```
 
-The same arrow-aware layout is a click away in the UI — the **arrange** button
-next to **recenter** force-directs the current board, pulling connected notes
-together while keeping each note inside its section (with one-tap undo).
-
 Every mutation runs through the same storage layer the UI uses (so section
 folders and arrows stay consistent), and boards are plain git-tracked files, so
 agent edits are reviewable with `git diff` and reversible like any other change.
