@@ -2,18 +2,26 @@
 We don't think in just text, why should we be restricted when making code? `brnstrm` is a simple workspace for brainstorming, planning, and managing implementation details for complex projects. Manage ideas, build diagrams, include references, and more, then hand off to your coding agent of choice to handle the implementation.
 
 ## Usage
+<<<<<<< HEAD
 Set `brnstrm` up in any project with one command:
+=======
+Set `brnstrm` up in any project with `npm`:
+>>>>>>> a60ce694274d3f74f61630d34378a9f4e2910d25
 
 ```
 npx brnstrm init
 ```
 
+<<<<<<< HEAD
 This interactive setup:
 - creates a `.brnstrm/` folder where this project's boards live,
 - asks whether to track your boards in git (and edits `.gitignore` to match),
 - installs the brnstrm skill for the coding agent(s) you use (Claude Code,
   Cursor, or a generic `AGENTS.md`), so they can read and write your boards.
 
+=======
+This creates a `.brnstrm/` folder where this project's boards live, enables/disables git tracking, and installs the brnstrm skill for the coding agent(s) so they can read and write your boards.
+>>>>>>> a60ce694274d3f74f61630d34378a9f4e2910d25
 For scripts/CI it's also non-interactive: `npx brnstrm init --yes --no-git --agents=claude,cursor`.
 
 Then start the visual workspace:
@@ -52,10 +60,13 @@ npx brnstrm connect <board> --from "Goals" --to "API" --label "drives"
 npx brnstrm arrange <board>             # arrow-aware auto layout
 ```
 
+<<<<<<< HEAD
 The same arrow-aware layout is a click away in the UI via the **arrange** button
 next to **recenter** force-directs the current board, pulling connected notes
 together while keeping each note inside its section (with one-tap undo).
 
+=======
+>>>>>>> a60ce694274d3f74f61630d34378a9f4e2910d25
 Every mutation runs through the same storage layer the UI uses (so section
 folders and arrows stay consistent), and boards are plain git-tracked files, so
 agent edits are reviewable with `git diff` and reversible like any other change.
