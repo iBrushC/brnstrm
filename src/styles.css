@@ -216,11 +216,13 @@ body {
   position: relative;
   flex: 1;
   overflow: hidden;
-  cursor: default;
+  /* Empty canvas is pannable by plain drag — show the grab affordance. */
+  cursor: grab;
 }
 
+/* Shift signals marquee box-select is available. */
 #canvas.shift-held {
-  cursor: grab;
+  cursor: crosshair;
 }
 
 #canvas.panning {

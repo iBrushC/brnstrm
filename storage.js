@@ -246,13 +246,14 @@ function buildSectionPaths(boardId, layout) {
 // Where a node's .md file should live: the innermost (smallest) section that
 // fully contains it, or the board root when no section does.
 // Pass a pre-built pathMap to avoid recomputing it when called in a loop.
-function targetDirForNode(boardId, layout, node, pathMap) {
+function targetDirForNode(boardId, layout, node, pathMap, root) {
+  const base = root || boardDir(boardId);
   const containing = sectionsOf(layout).filter((s) => sectionContains(s, node));
-  if (!containing.length) return boardDir(boardId);
+  if (!containing.length) return base;
   containing.sort((a, b) => rectArea(a) - rectArea(b) || a.id.localeCompare(b.id));
   const inner = containing[0];
   const map = pathMap || buildSectionPaths(boardId, layout);
-  return map.get(inner.id) || boardDir(boardId);
+  return map.get(inner.id) || base;
 }
 
 // Locate a node's .md file by stem, searching the entire board directory tree.
@@ -302,6 +303,57 @@ function findSectionDir(boardId, slug) {
   return search(root);
 }
 
+// One recursive walk of a board's tree, returning lookup maps so callers resolve
+// every node file / section folder in O(1). Re-walking the tree per item (the old
+// findNodeFile/findSectionDir-in-a-loop pattern) made reconcile O(N^2) and board
+// reads O(N^2); a single index keeps both linear. First-seen wins, matching the
+// depth-first "first match" semantics of findNodeFile.
+function indexBoardFiles(root) {
+  const nodeFiles = new Map(); // stem  -> absolute .md path
+  const sectionDirs = new Map(); // slug -> absolute folder path
+  function walk(dir) {
+    let entries = [];
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true });
+    } catch (_) {
+      return;
+    }
+    for (const e of entries) {
+      if (e.isFile()) {
+        if (e.name.endsWith(".md")) {
+          const stem = e.name.slice(0, -3);
+          if (!nodeFiles.has(stem)) nodeFiles.set(stem, path.join(dir, e.name));
+        }
+      } else if (e.isDirectory()) {
+        if (!sectionDirs.has(e.name)) sectionDirs.set(e.name, path.join(dir, e.name));
+        walk(path.join(dir, e.name));
+      }
+    }
+  }
+  walk(root);
+  return { nodeFiles, sectionDirs };
+}
+
+// Move a file without ever clobbering: if the destination is occupied by a
+// *different* file, suffix the name ("-2", "-3", …) so neither file is lost. Used
+// when relocating loose files out of a stale folder during reconcile.
+function safeRelocate(src, destDir, name) {
+  let target = path.join(destDir, name);
+  if (path.resolve(src) === path.resolve(target)) return;
+  if (fs.existsSync(target)) {
+    const ext = path.extname(name);
+    const base = path.basename(name, ext);
+    let i = 2;
+    do {
+      target = path.join(destDir, `${base}-${i}${ext}`);
+      i++;
+    } while (fs.existsSync(target));
+  }
+  try {
+    fs.renameSync(src, target);
+  } catch (_) {}
+}
+
 // Make the on-disk folder tree match the current sections/nodes.
 //
 // Sections nest: a section whose box is fully inside another section's box
@@ -341,15 +393,21 @@ function reconcileSections(boardId, layout) {
     }
   }
 
-  // Phase 2: move each node file to its target folder.
+  // Phase 2: move each node file to its target folder. Build a single file index
+  // after Phase 1's folder moves so each node is an O(1) lookup, not a full-tree
+  // search (this is what kept arrange from being O(N^3)).
+  const { nodeFiles } = indexBoardFiles(root);
   for (const node of layout.nodes) {
     const stem = nodeStem(node);
-    const target = path.join(targetDirForNode(boardId, layout, node, pathMap), stem + ".md");
-    const current = findNodeFile(boardId, stem);
+    const target = path.join(targetDirForNode(boardId, layout, node, pathMap, root), stem + ".md");
+    const current = nodeFiles.get(stem);
     if (current && path.resolve(current) !== path.resolve(target)) {
       try {
         fs.mkdirSync(path.dirname(target), { recursive: true });
-        fs.renameSync(current, target);
+        // Never clobber: only relocate when the target stem isn't already taken
+        // by a different file (stems are board-unique, so this only guards the
+        // pathological orphan-file case).
+        if (!fs.existsSync(target)) fs.renameSync(current, target);
       } catch (_) {}
     }
   }
@@ -380,9 +438,9 @@ function reconcileSections(boardId, layout) {
         } catch (_) {}
         for (const f of contents) {
           if (f.isFile()) {
-            try {
-              fs.renameSync(path.join(sub, f.name), path.join(root, f.name));
-            } catch (_) {}
+            // Collision-safe: suffix rather than overwrite an existing root file
+            // (a stale folder's note.md must not clobber a real one).
+            safeRelocate(path.join(sub, f.name), root, f.name);
           }
         }
         try {
@@ -491,9 +549,12 @@ function saveCameraPosition(id, camera) {
 
 function getBoard(id) {
   const layout = readLayout(id);
+  // Index the tree once, then resolve every node's file in O(1) — previously each
+  // node triggered a full-tree search, making large board loads O(N^2).
+  const { nodeFiles } = indexBoardFiles(boardDir(id));
   const nodes = layout.nodes.map((n) => {
     let content = "";
-    const file = findNodeFile(id, nodeStem(n));
+    const file = nodeFiles.get(nodeStem(n));
     if (file) {
       try {
         content = fs.readFileSync(file, "utf8");
@@ -590,6 +651,31 @@ function updateNode(id, nodeId, patch) {
   // Geometry may have changed which section a node falls in — re-sync folders.
   reconcileSections(id, layout);
   return { ok: true };
+}
+
+// Batch geometry update: apply many {id,x?,y?,w?,h?} patches with a single layout
+// write and a single folder reconcile. `arrange`/`format` move every node at once;
+// routing each through updateNode reconciled the whole tree N times (an O(N^3),
+// ~100s-on-100-notes path). This collapses that to one reconcile.
+function updateNodes(id, patches) {
+  const layout = readLayout(id);
+  const byId = new Map(layout.nodes.map((n) => [n.id, n]));
+  let updated = 0;
+  for (const p of patches || []) {
+    const node = byId.get(p && p.id);
+    if (!node) continue;
+    let touched = false;
+    for (const key of ["x", "y", "w", "h"]) {
+      if (Number.isFinite(p[key])) {
+        node[key] = Math.round(p[key]);
+        touched = true;
+      }
+    }
+    if (touched) updated++;
+  }
+  writeLayout(id, layout);
+  reconcileSections(id, layout);
+  return { ok: true, updated };
 }
 
 function deleteNode(id, nodeId) {
@@ -1053,6 +1139,7 @@ module.exports = {
   getBoard,
   createNode,
   updateNode,
+  updateNodes,
   deleteNode,
   createSection,
   updateSection,

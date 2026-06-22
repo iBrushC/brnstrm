@@ -294,7 +294,8 @@ let startX = 0;
 let startY = 0;
 let boxSel = null;
 
-// Show grab cursor while Shift is held (signals pan mode is available).
+// Show the marquee (crosshair) cursor while Shift is held — plain drag pans, so
+// Shift is the modifier that switches an empty-canvas drag to box-select.
 document.addEventListener("keydown", (e) => {
   if (e.key === "Shift" && !panning) canvas.classList.add("shift-held");
 });
@@ -311,14 +312,7 @@ canvas.addEventListener("mousedown", (e) => {
   }
 
   if (e.shiftKey) {
-    // Shift + drag = pan
-    panning = true;
-    startX = e.clientX - view.x;
-    startY = e.clientY - view.y;
-    canvas.classList.add("panning");
-    canvas.classList.remove("shift-held");
-  } else {
-    // Plain drag on empty canvas = marquee box selection
+    // Shift + drag = marquee box selection
     const r = canvas.getBoundingClientRect();
     const startWorld = screenToWorld(e.clientX - r.left, e.clientY - r.top);
     const previewEl = document.createElement("div");
@@ -326,6 +320,13 @@ canvas.addEventListener("mousedown", (e) => {
     canvas.appendChild(previewEl);
     boxSel = { startWorld, startScreen: { x: e.clientX, y: e.clientY }, previewEl, canvasRect: r };
     canvas.classList.add("box-selecting");
+  } else {
+    // Plain drag on empty canvas = pan (matches Figma/Miro/Excalidraw muscle memory)
+    panning = true;
+    startX = e.clientX - view.x;
+    startY = e.clientY - view.y;
+    canvas.classList.add("panning");
+    canvas.classList.remove("shift-held");
   }
 });
 

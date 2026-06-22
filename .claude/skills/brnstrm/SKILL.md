@@ -26,6 +26,11 @@ board id, its folder slug, or its display name.
    `--section S` / `--note N` for one piece). The output is the same markdown a
    human gets from the in-app "export to LLM" button: sections become headings,
    notes become text, arrows become a Relationships list. Read before you write.
+   Each note/section heading and every relationship carries its **stable id** in a
+   trailing HTML comment (`### Note: API <!-- node-3 -->`,
+   `- "API" --drives--> "Goals" <!-- node-3 -> section-1 -->`). When you write
+   back, address things by that id rather than by name — names can repeat, ids
+   never do, so the id is what guarantees you edit/connect the thing you meant.
 2. **Reason** about it as a specification of ideas — that's what it is.
 3. **Write back** only what the human asked for. Prefer a few well-named notes
    over many tiny ones. Name every note and section you create.
@@ -54,8 +59,12 @@ deal with pixel coordinates. Pass long markdown bodies via a file or stdin:
 node bin/brnstrm.mjs add-section my-board --label "Backend"
 node bin/brnstrm.mjs add-note my-board --name "API" --section "Backend" \
   --content "REST endpoints over the storage layer"
-echo "## Schema\n\nUsers, boards, nodes." | \
+# pipe a body on stdin with --content - (use printf, not echo: echo leaves the
+# literal "\n" in the note instead of real newlines)
+printf '## Schema\n\nUsers, boards, nodes.' | \
   node bin/brnstrm.mjs add-note my-board --name "DB" --section "Backend" --content -
+# for longer bodies, --content-file <path> is the most robust
+node bin/brnstrm.mjs add-note my-board --name "DB" --section "Backend" --content-file schema.md
 ```
 
 Connect two things by **name or id** — `connect` resolves notes and sections for

@@ -2,7 +2,7 @@
 We don't think in just text, why should we be restricted when making code? `brnstrm` is a simple workspace for brainstorming, planning, and managing implementation details for complex projects. Manage ideas, build diagrams, include references, and more, then hand off to your coding agent of choice to handle the implementation.
 
 ## Usage
-Set `brnstrm` up in any project — Node or not — with one command:
+Set `brnstrm` up in any project with one command:
 
 ```
 npx brnstrm init
@@ -14,8 +14,7 @@ This interactive setup:
 - installs the brnstrm skill for the coding agent(s) you use (Claude Code,
   Cursor, or a generic `AGENTS.md`), so they can read and write your boards.
 
-It only touches those things — nothing else. For scripts/CI it's also
-non-interactive: `npx brnstrm init --yes --no-git --agents=claude,cursor`.
+For scripts/CI it's also non-interactive: `npx brnstrm init --yes --no-git --agents=claude,cursor`.
 
 Then start the visual workspace:
 
@@ -40,8 +39,7 @@ These cards let you express ideas more effectively. These can be used in a multi
 3. Giving other team members and agents a consistent multimodal knowledge base of the project
 
 ## Agentic Brainstorming
-Coding agents can read and write boards directly through a headless CLI — no
-browser or running server needed. This lets you brainstorm with an agent: lay
+Coding agents can read and write boards directly through a headless CLI. This lets you brainstorm with an agent: lay
 out a system, have the agent review it, expand it into well-defined chunks, or
 turn a plan it wrote into a board you can see.
 
@@ -54,7 +52,7 @@ npx brnstrm connect <board> --from "Goals" --to "API" --label "drives"
 npx brnstrm arrange <board>             # arrow-aware auto layout
 ```
 
-The same arrow-aware layout is a click away in the UI — the **arrange** button
+The same arrow-aware layout is a click away in the UI via the **arrange** button
 next to **recenter** force-directs the current board, pulling connected notes
 together while keeping each note inside its section (with one-tap undo).
 

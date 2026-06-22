@@ -419,13 +419,20 @@ function layoutBodies(bodies, edges) {
 
   const { comps, loose } = components(bodies, edges);
 
-  // Lay out every component in its own local coordinate space.
+  // The force solver is O(iters·(N²+E²)) — fine for small clusters but it freezes
+  // the main thread on big dense/cyclic ones (measured ~27s at 300 nodes). Cap the
+  // component size that may reach it; above the cap, fall back to a layered pass if
+  // it applies, else a plain grid (both ~O(N+E)).
+  const FORCE_MAX = 100;
   const blocks = []; // each: array of body refs (now positioned in local coords)
   for (const { nodes, edges: localEdges } of comps) {
     const dense = localEdges.length > nodes.length * 2;
     let ok = false;
     if (!dense) ok = layeredLayout(nodes, localEdges);
-    if (!ok) forceLayout(nodes, localEdges);
+    if (!ok) {
+      if (nodes.length <= FORCE_MAX) forceLayout(nodes, localEdges);
+      else if (!layeredLayout(nodes, localEdges)) gridLayout(nodes);
+    }
     blocks.push(nodes);
   }
   // All arrow-less bodies share one grid block.

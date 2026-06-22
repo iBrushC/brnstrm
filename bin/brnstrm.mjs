@@ -65,6 +65,19 @@ function boardIdOrFail(ref) {
   if (!ref) fail("a board (id or name) is required");
   const id = storage.resolveBoardId(ref);
   if (!id) fail(`no board matches "${ref}" — run \`list\` to see boards`);
+  // Warn (don't fail) when a display name is shared by several boards, so a write
+  // doesn't silently land on the wrong one. An exact id ref is never ambiguous.
+  const all = storage.listBoards();
+  if (!all.some((b) => b.id === ref)) {
+    const lower = String(ref).toLowerCase();
+    const sameName = all.filter((b) => (b.name || "").toLowerCase() === lower);
+    if (sameName.length > 1) {
+      process.stderr.write(
+        `warning: "${ref}" matches ${sameName.length} boards — using ${id}. ` +
+          `Disambiguate by id: ${sameName.map((b) => b.id).join(", ")}\n`
+      );
+    }
+  }
   return id;
 }
 
@@ -155,16 +168,38 @@ function rightEdge(model) {
 // names/slugs, then section labels/slugs. So an agent can write
 // `connect board --from "Agent Review" --to "Knowledge Bases"` by name.
 function resolveEndpoint(model, ref) {
+  // An exact id is unambiguous — take it directly.
+  const idNode = model.nodes.find((n) => n.id === ref);
+  if (idNode) return { id: idNode.id, kind: "node" };
+  const idSec = model.sections.find((s) => s.id === ref);
+  if (idSec) return { id: idSec.id, kind: "section" };
+
   const want = String(ref).toLowerCase();
-  const node =
-    model.nodes.find((n) => n.id === ref) ||
-    model.nodes.find((n) => (n.name || "").toLowerCase() === want) ||
-    model.nodes.find((n) => (n.slug || "").toLowerCase() === want) ||
-    model.nodes.find((n) => nodeName(n).toLowerCase() === want);
-  if (node) return { id: node.id, kind: "node" };
-  const section = findSection(model, ref);
-  if (section) return { id: section.id, kind: "section" };
-  return null;
+  const nodes = model.nodes.filter(
+    (n) =>
+      (n.name || "").toLowerCase() === want ||
+      (n.slug || "").toLowerCase() === want ||
+      nodeName(n).toLowerCase() === want
+  );
+  const sections = model.sections.filter(
+    (s) =>
+      (s.slug || "").toLowerCase() === want ||
+      (s.label || "").toLowerCase() === want
+  );
+  const matches = [
+    ...nodes.map((n) => ({ id: n.id, kind: "node", label: nodeName(n) })),
+    ...sections.map((s) => ({ id: s.id, kind: "section", label: (s.label || "").trim() || s.id })),
+  ];
+  if (!matches.length) return null;
+  // Don't silently wire the wrong endpoint when a name is shared — warn and list
+  // the candidate ids so the agent can re-issue with an exact id.
+  if (matches.length > 1) {
+    process.stderr.write(
+      `warning: "${ref}" matches ${matches.length} things — using ${matches[0].id}. ` +
+        `Disambiguate by id: ${matches.map((m) => `${m.id} (${m.kind} "${m.label}")`).join(", ")}\n`
+    );
+  }
+  return { id: matches[0].id, kind: matches[0].kind };
 }
 
 /* ---------------- commands ---------------- */
@@ -190,10 +225,16 @@ const commands = {
     }
     if (opts.note && opts.note !== true) {
       const want = String(opts.note).toLowerCase();
-      const node =
-        model.nodes.find((n) => n.id === opts.note) ||
-        model.nodes.find((n) => (n.name || "").toLowerCase() === want);
+      const byId = model.nodes.find((n) => n.id === opts.note);
+      const byName = model.nodes.filter((n) => (n.name || "").toLowerCase() === want);
+      const node = byId || byName[0];
       if (!node) fail(`no note matches "${opts.note}"`);
+      if (!byId && byName.length > 1) {
+        process.stderr.write(
+          `warning: "${opts.note}" matches ${byName.length} notes — using ${node.id}. ` +
+            `Disambiguate by id: ${byName.map((n) => n.id).join(", ")}\n`
+        );
+      }
       process.stdout.write(formatNote(node));
       return;
     }
@@ -397,13 +438,17 @@ const commands = {
       storage.updateSection(id, s.id, { x: s.x, y: s.y, w: s.w, h: s.h });
       moved++;
     }
+    // Batch every node move into one storage call (one layout write + one folder
+    // reconcile) instead of reconciling the whole tree once per node.
+    const nodePatches = [];
     for (const n of next.nodes) {
       const cur = nodeById.get(n.id);
       if (cur && (cur.x !== n.x || cur.y !== n.y)) {
-        storage.updateNode(id, n.id, { x: n.x, y: n.y });
+        nodePatches.push({ id: n.id, x: n.x, y: n.y });
         moved++;
       }
     }
+    if (nodePatches.length) storage.updateNodes(id, nodePatches);
     out({ ok: true, board: id, moved });
   },
 
@@ -416,14 +461,17 @@ const commands = {
     const snap = (v) => Math.round(v / 10) * 10;
     let changed = 0;
 
+    const nodePatches = [];
     for (const n of model.nodes) {
       const patch = { x: snap(n.x), y: snap(n.y), w: snap(n.w), h: snap(n.h) };
       if (patch.x !== n.x || patch.y !== n.y || patch.w !== n.w || patch.h !== n.h) {
-        storage.updateNode(id, n.id, patch);
+        nodePatches.push({ id: n.id, ...patch });
         Object.assign(n, patch);
         changed++;
       }
     }
+    // One batched write + reconcile for all snapped notes (see arrange above).
+    if (nodePatches.length) storage.updateNodes(id, nodePatches);
 
     // Sort sections largest-first so resizing an outer section doesn't fight a
     // nested one; recompute the wrap from the (now snapped) node positions.

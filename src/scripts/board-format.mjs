@@ -98,14 +98,17 @@ function makeNameOf(nodes, sections) {
 /* ---------------- markdown rendering ---------------- */
 const hashes = (level) => "#".repeat(Math.max(1, level));
 
+// Stable ids ride along in an HTML comment: invisible in rendered markdown (so a
+// human's pasted export stays clean) but machine-readable, so an agent can tell
+// two same-named notes apart and address the right one on write-back.
 function renderNote(n, level, lines) {
-  lines.push(hashes(level) + " Note: " + nodeName(n), "");
+  lines.push(`${hashes(level)} Note: ${nodeName(n)} <!-- ${n.id} -->`, "");
   const body = (n.content || "").trim();
   if (body) lines.push(body, "");
 }
 
 function renderSection(s, level, lines) {
-  lines.push(hashes(level) + " Section: " + sectionName(s), "");
+  lines.push(`${hashes(level)} Section: ${sectionName(s)} <!-- ${s.id} -->`, "");
   for (const n of s.childNodes.slice().sort(byPos)) renderNote(n, level + 1, lines);
   for (const cs of s.childSections.slice().sort(byPos)) renderSection(cs, level + 1, lines);
 }
@@ -123,7 +126,10 @@ function renderRelationships(connections, includeId, nameOf, level, lines) {
   for (const c of rels) {
     const label = (c.label || "").trim();
     const arrow = label ? `--${label}-->` : "-->";
-    lines.push(`- "${nameOf(c.from)}" ${arrow} "${nameOf(c.to)}"`);
+    // Endpoint ids in a trailing comment disambiguate when names collide.
+    lines.push(
+      `- "${nameOf(c.from)}" ${arrow} "${nameOf(c.to)}" <!-- ${c.from} -> ${c.to} -->`
+    );
   }
   lines.push("");
 }

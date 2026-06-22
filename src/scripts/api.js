@@ -1,13 +1,29 @@
 // Thin client for the storage API.
 
+import { toast } from "./toast.js";
+
+// A failed write used to be swallowed (only console.error'd by callers), so the
+// canvas looked fine while the edit never persisted. Surface every failure —
+// network drop or non-2xx — through a toast so the user knows their change may
+// not be saved, then still throw so callers' own handling runs.
 async function req(method, url, body) {
   const opt = { method, headers: {} };
   if (body !== undefined) {
     opt.headers["Content-Type"] = "application/json";
     opt.body = JSON.stringify(body);
   }
-  const res = await fetch(url, opt);
-  if (!res.ok) throw new Error(method + " " + url + " -> " + res.status);
+  const verb = method === "GET" ? "load" : "save";
+  let res;
+  try {
+    res = await fetch(url, opt);
+  } catch (err) {
+    toast(`Couldn't ${verb} — the server is unreachable. Your last change may not be saved.`);
+    throw err;
+  }
+  if (!res.ok) {
+    toast(`Couldn't ${verb} (server returned ${res.status}). Your last change may not be saved.`);
+    throw new Error(method + " " + url + " -> " + res.status);
+  }
   return res.json();
 }
 
@@ -51,7 +67,10 @@ export const api = {
       },
       body: file,
     });
-    if (!res.ok) throw new Error("upload " + file.name + " -> " + res.status);
+    if (!res.ok) {
+      toast(`Couldn't upload ${file.name} (server returned ${res.status}).`);
+      throw new Error("upload " + file.name + " -> " + res.status);
+    }
     return res.json();
   },
 
