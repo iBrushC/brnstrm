@@ -24,6 +24,7 @@
 
 const fs = require("fs");
 const path = require("path");
+const { execFileSync } = require("child_process");
 
 // Global storage root. Resolution order:
 //   1. BRNSTRM_DATA env var — explicit override, wins over everything.
@@ -311,6 +312,7 @@ function findSectionDir(boardId, slug) {
 function indexBoardFiles(root) {
   const nodeFiles = new Map(); // stem  -> absolute .md path
   const sectionDirs = new Map(); // slug -> absolute folder path
+  const commentFiles = new Map(); // target stem -> [{ n, path }]  (see COMMENT_RE)
   function walk(dir) {
     let entries = [];
     try {
@@ -321,8 +323,18 @@ function indexBoardFiles(root) {
     for (const e of entries) {
       if (e.isFile()) {
         if (e.name.endsWith(".md")) {
-          const stem = e.name.slice(0, -3);
-          if (!nodeFiles.has(stem)) nodeFiles.set(stem, path.join(dir, e.name));
+          // Comment files ("<stem>.note-<n>.md") are indexed apart from node
+          // files so a note never reads a comment as its own body. The dot before
+          // ".note-" can't occur in a slug, so the two never collide.
+          const cm = COMMENT_RE.exec(e.name);
+          if (cm) {
+            const arr = commentFiles.get(cm[1]) || [];
+            arr.push({ n: Number(cm[2]), path: path.join(dir, e.name) });
+            commentFiles.set(cm[1], arr);
+          } else {
+            const stem = e.name.slice(0, -3);
+            if (!nodeFiles.has(stem)) nodeFiles.set(stem, path.join(dir, e.name));
+          }
         }
       } else if (e.isDirectory()) {
         if (!sectionDirs.has(e.name)) sectionDirs.set(e.name, path.join(dir, e.name));
@@ -331,7 +343,7 @@ function indexBoardFiles(root) {
     }
   }
   walk(root);
-  return { nodeFiles, sectionDirs };
+  return { nodeFiles, sectionDirs, commentFiles };
 }
 
 // Move a file without ever clobbering: if the destination is occupied by a
@@ -396,10 +408,11 @@ function reconcileSections(boardId, layout) {
   // Phase 2: move each node file to its target folder. Build a single file index
   // after Phase 1's folder moves so each node is an O(1) lookup, not a full-tree
   // search (this is what kept arrange from being O(N^3)).
-  const { nodeFiles } = indexBoardFiles(root);
+  const { nodeFiles, commentFiles } = indexBoardFiles(root);
   for (const node of layout.nodes) {
     const stem = nodeStem(node);
-    const target = path.join(targetDirForNode(boardId, layout, node, pathMap, root), stem + ".md");
+    const destDir = targetDirForNode(boardId, layout, node, pathMap, root);
+    const target = path.join(destDir, stem + ".md");
     const current = nodeFiles.get(stem);
     if (current && path.resolve(current) !== path.resolve(target)) {
       try {
@@ -409,6 +422,18 @@ function reconcileSections(boardId, layout) {
         // pathological orphan-file case).
         if (!fs.existsSync(target)) fs.renameSync(current, target);
       } catch (_) {}
+    }
+    // A note's comment files travel with it into the same folder, so they stay
+    // "just like notes" on disk (section comment files ride along inside their
+    // section folder when the folder itself is moved in Phase 1).
+    for (const c of commentFiles.get(stem) || []) {
+      const cdest = path.join(destDir, commentFileName(stem, c.n));
+      if (path.resolve(c.path) !== path.resolve(cdest)) {
+        try {
+          fs.mkdirSync(destDir, { recursive: true });
+          if (!fs.existsSync(cdest)) fs.renameSync(c.path, cdest);
+        } catch (_) {}
+      }
     }
   }
 
@@ -551,7 +576,7 @@ function getBoard(id) {
   const layout = readLayout(id);
   // Index the tree once, then resolve every node's file in O(1) — previously each
   // node triggered a full-tree search, making large board loads O(N^2).
-  const { nodeFiles } = indexBoardFiles(boardDir(id));
+  const { nodeFiles, commentFiles } = indexBoardFiles(boardDir(id));
   const nodes = layout.nodes.map((n) => {
     let content = "";
     const file = nodeFiles.get(nodeStem(n));
@@ -569,6 +594,7 @@ function getBoard(id) {
     nodes,
     sections: sectionsOf(layout),
     connections: readConnections(id).connections,
+    comments: buildComments(layout, commentFiles),
   };
 }
 
@@ -634,6 +660,8 @@ function updateNode(id, nodeId, patch) {
           fs.renameSync(cur, path.join(path.dirname(cur), node.slug + ".md"));
         } catch (_) {}
       }
+      // The note's comment files are named off its slug — re-slug them to match.
+      reslugComments(id, oldStem, node.slug);
     }
   }
   writeLayout(id, layout);
@@ -689,6 +717,7 @@ function deleteNode(id, nodeId) {
       fs.unlinkSync(file);
     } catch (_) {}
   }
+  if (node) deleteCommentsForStem(id, nodeStem(node)); // drop the note's comments
   pruneConnections(id, nodeId); // drop arrows that referenced the node
   reconcileSections(id, layout);
   return { ok: true };
@@ -739,7 +768,9 @@ function updateSection(id, sectionId, patch) {
   }
   // Relabelling re-slugs the section folder; reconcile then renames it on disk
   // and carries the contained node files across.
+  let oldStem = null;
   if (typeof patch.label === "string") {
+    oldStem = sectionSlug(section);
     section.label = patch.label;
     const taken = new Set([
       ...sectionsOf(layout).filter((s) => s.id !== sectionId).map(sectionSlug),
@@ -749,13 +780,20 @@ function updateSection(id, sectionId, patch) {
   }
   writeLayout(id, layout);
   reconcileSections(id, layout);
+  // After the folder is renamed, re-slug the section's own comment files inside it
+  // so they keep tracking the section by its new slug.
+  if (oldStem) reslugComments(id, oldStem, sectionSlug(section));
   return { ok: true };
 }
 
 function deleteSection(id, sectionId) {
   const layout = readLayout(id);
+  const section = sectionsOf(layout).find((s) => s.id === sectionId);
   layout.sections = sectionsOf(layout).filter((s) => s.id !== sectionId);
   writeLayout(id, layout);
+  // Remove the section's own comments before reconcile tears down its folder
+  // (otherwise cleanDir would scatter them, orphaned, into the board root).
+  if (section) deleteCommentsForStem(id, sectionSlug(section));
   pruneConnections(id, sectionId); // drop arrows that referenced the section
   // reconcile moves any nodes that were inside back out, then removes the folder.
   reconcileSections(id, layout);
@@ -913,6 +951,215 @@ function pruneConnections(id, refId) {
   if (conns.connections.length !== before) writeConnections(id, conns);
 }
 
+/* ---------- comments (user feedback pinned to a note/section) ---------- */
+//
+// Comments are user-authored remarks attached to a note or section. They mirror
+// into the folder structure "just like notes", one file per remark, named:
+//   <target-slug>.note-<n>.md          (n increments per target, starting at 1)
+// living beside the thing they annotate (a note's comments sit in the same
+// folder as its .md; a section's sit inside the section folder). A small header
+// records the git author (when the project is git-tracked) and creation time;
+// the body is the free-text remark. The dot before ".note-" never occurs in a
+// slug (slugify collapses every non-alphanumeric run to "-"), so a comment file
+// can never be mistaken for a regular node file.
+//
+// Comments are a *human* affordance: created and removed only through the HTTP
+// API the browser uses. The agent CLI can read them (to revise plans) but never
+// writes them — see bin/brnstrm.mjs.
+
+const COMMENT_RE = /^(.+)\.note-(\d+)\.md$/;
+
+function commentFileName(stem, n) {
+  return stem + ".note-" + n + ".md";
+}
+
+// Resolve the comment author once per process: the git `user.name`, but only when
+// the storage root is inside a git work tree, so boards in a non-git project stay
+// anonymous rather than borrowing some global git identity.
+let _gitAuthor; // undefined = unresolved; "" or a name once resolved
+function gitAuthor() {
+  if (_gitAuthor !== undefined) return _gitAuthor;
+  _gitAuthor = "";
+  try {
+    const opts = { cwd: STORAGE, stdio: ["ignore", "pipe", "ignore"] };
+    const inTree = execFileSync("git", ["rev-parse", "--is-inside-work-tree"], opts)
+      .toString()
+      .trim();
+    if (inTree === "true") {
+      _gitAuthor = execFileSync("git", ["config", "user.name"], opts).toString().trim();
+    }
+  } catch (_) {
+    _gitAuthor = "";
+  }
+  return _gitAuthor;
+}
+
+function formatCommentFile(meta, text) {
+  return ["---", "author: " + (meta.author || ""), "created: " + (meta.created || ""), "---", "", text.trim(), ""].join(
+    "\n"
+  );
+}
+
+// Parse a comment file's header + body. Tolerant of a missing header (the whole
+// file is then read as the body) so a hand-edited file still loads.
+function parseCommentFile(raw) {
+  const m = /^---\n([\s\S]*?)\n---\n?/.exec(raw);
+  let author = "";
+  let created = "";
+  let body = raw;
+  if (m) {
+    for (const line of m[1].split("\n")) {
+      const kv = /^(\w+):\s*(.*)$/.exec(line);
+      if (!kv) continue;
+      if (kv[1] === "author") author = kv[2].trim();
+      else if (kv[1] === "created") created = kv[2].trim();
+    }
+    body = raw.slice(m[0].length);
+  }
+  return { author, created, text: body.trim() };
+}
+
+// Every comment file for one target stem, found anywhere in the board tree (so a
+// note that has since moved between section folders is still matched), sorted by n.
+function findCommentFiles(boardId, stem) {
+  const out = [];
+  function walk(dir) {
+    let entries = [];
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true });
+    } catch (_) {
+      return;
+    }
+    for (const e of entries) {
+      if (e.isFile()) {
+        const m = COMMENT_RE.exec(e.name);
+        if (m && m[1] === stem) out.push({ n: Number(m[2]), path: path.join(dir, e.name) });
+      } else if (e.isDirectory()) {
+        walk(path.join(dir, e.name));
+      }
+    }
+  }
+  walk(boardDir(boardId));
+  return out.sort((a, b) => a.n - b.n);
+}
+
+// Read a target's comment files into API entries.
+function readCommentEntries(targetId, targetKind, files) {
+  return files
+    .slice()
+    .sort((a, b) => a.n - b.n)
+    .map((f) => {
+      let raw = "";
+      try {
+        raw = fs.readFileSync(f.path, "utf8");
+      } catch (_) {}
+      const parsed = parseCommentFile(raw);
+      return {
+        targetId,
+        targetKind,
+        n: f.n,
+        author: parsed.author,
+        created: parsed.created,
+        text: parsed.text,
+      };
+    });
+}
+
+// Associate every comment file (keyed by target slug) back to the node/section it
+// annotates. Files whose stem matches no current target (target deleted/renamed)
+// are dropped from the API view — the loose file is harmless and git-visible.
+function buildComments(layout, commentFiles) {
+  const out = [];
+  const nodeBySlug = new Map(layout.nodes.map((n) => [nodeStem(n), n.id]));
+  const secBySlug = new Map(sectionsOf(layout).map((s) => [sectionSlug(s), s.id]));
+  for (const [stem, files] of commentFiles) {
+    if (nodeBySlug.has(stem)) out.push(...readCommentEntries(nodeBySlug.get(stem), "node", files));
+    else if (secBySlug.has(stem)) out.push(...readCommentEntries(secBySlug.get(stem), "section", files));
+  }
+  return out;
+}
+
+// Resolve a target id to { stem, dir, kind }: where its comment files should live.
+// A note's comments sit beside its .md (same section folder); a section's sit
+// inside the section folder.
+function commentTarget(boardId, layout, targetId) {
+  const node = layout.nodes.find((n) => n.id === targetId);
+  if (node) {
+    return { stem: nodeStem(node), dir: targetDirForNode(boardId, layout, node), kind: "node" };
+  }
+  const section = sectionsOf(layout).find((s) => s.id === targetId);
+  if (section) {
+    const dir = buildSectionPaths(boardId, layout).get(section.id) || boardDir(boardId);
+    return { stem: sectionSlug(section), dir, kind: "section" };
+  }
+  return null;
+}
+
+// Slug of a target id (note or section), or null when the id is unknown.
+function targetStem(layout, targetId) {
+  const node = layout.nodes.find((n) => n.id === targetId);
+  if (node) return nodeStem(node);
+  const section = sectionsOf(layout).find((s) => s.id === targetId);
+  return section ? sectionSlug(section) : null;
+}
+
+// Rename a target's comment files when its slug changes, so they keep tracking it.
+function reslugComments(boardId, oldStem, newStem) {
+  if (!oldStem || oldStem === newStem) return;
+  for (const c of findCommentFiles(boardId, oldStem)) {
+    const dest = path.join(path.dirname(c.path), commentFileName(newStem, c.n));
+    try {
+      if (!fs.existsSync(dest)) fs.renameSync(c.path, dest);
+    } catch (_) {}
+  }
+}
+
+// Delete every comment file for a target (called when the note/section is deleted).
+function deleteCommentsForStem(boardId, stem) {
+  if (!stem) return;
+  for (const c of findCommentFiles(boardId, stem)) {
+    try {
+      fs.unlinkSync(c.path);
+    } catch (_) {}
+  }
+}
+
+function listComments(boardId) {
+  const layout = readLayout(boardId);
+  const { commentFiles } = indexBoardFiles(boardDir(boardId));
+  return buildComments(layout, commentFiles);
+}
+
+function createComment(boardId, data) {
+  const layout = readLayout(boardId);
+  const targetId = String(data.targetId || "");
+  const text = typeof data.text === "string" ? data.text.trim() : "";
+  // Empty comments are discarded, never written (the UI also guards this).
+  if (!text) throw new Error("empty comment");
+  const t = commentTarget(boardId, layout, targetId);
+  if (!t) throw new Error("comment target not found");
+  const n = findCommentFiles(boardId, t.stem).reduce((max, c) => Math.max(max, c.n), 0) + 1;
+  const meta = { author: gitAuthor(), created: new Date().toISOString() };
+  try {
+    fs.mkdirSync(t.dir, { recursive: true });
+  } catch (_) {}
+  fs.writeFileSync(path.join(t.dir, commentFileName(t.stem, n)), formatCommentFile(meta, text));
+  return { targetId, targetKind: t.kind, n, author: meta.author, created: meta.created, text };
+}
+
+function deleteComment(boardId, targetId, n) {
+  const layout = readLayout(boardId);
+  const stem = targetStem(layout, targetId);
+  if (!stem) return { ok: false };
+  const hit = findCommentFiles(boardId, stem).find((c) => c.n === Number(n));
+  if (hit) {
+    try {
+      fs.unlinkSync(hit.path);
+    } catch (_) {}
+  }
+  return { ok: true };
+}
+
 /* ---------- HTTP routing ---------- */
 
 function readBody(req) {
@@ -983,6 +1230,9 @@ function sendFile(res, file, mime) {
 //   POST   /api/boards/:id/connections             { from, to, label?, kind? }
 //   PATCH  /api/boards/:id/connections/:connId     { label? }
 //   DELETE /api/boards/:id/connections/:connId
+//   GET    /api/boards/:id/comments
+//   POST   /api/boards/:id/comments                { targetId, text }
+//   DELETE /api/boards/:id/comments/:targetId/:n
 async function handleApi(req, res, pathname) {
   const seg = pathname.split("/").filter(Boolean); // ["api","boards",...]
   const method = req.method;
@@ -1119,6 +1369,28 @@ async function handleApi(req, res, pathname) {
       if (method === "DELETE") return sendJson(res, 200, deleteConnection(id, connId));
     }
 
+    // /api/boards/:id/comments
+    if (seg.length === 4 && seg[1] === "boards" && seg[3] === "comments") {
+      const id = seg[2];
+      if (!safeSeg(id) || !fs.existsSync(boardDir(id)))
+        return sendJson(res, 404, { error: "board not found" });
+      if (method === "GET") return sendJson(res, 200, listComments(id));
+      if (method === "POST") {
+        const body = await readBody(req);
+        return sendJson(res, 201, createComment(id, body));
+      }
+    }
+
+    // /api/boards/:id/comments/:targetId/:n
+    if (seg.length === 6 && seg[1] === "boards" && seg[3] === "comments") {
+      const id = seg[2];
+      const targetId = seg[4];
+      const n = seg[5];
+      if (!safeSeg(id) || !safeSeg(targetId) || !/^\d+$/.test(n))
+        return sendJson(res, 404, { error: "not found" });
+      if (method === "DELETE") return sendJson(res, 200, deleteComment(id, targetId, Number(n)));
+    }
+
     return sendJson(res, 404, { error: "unknown route" });
   } catch (err) {
     return sendJson(res, 500, { error: String(err.message || err) });
@@ -1147,6 +1419,9 @@ module.exports = {
   createConnection,
   updateConnection,
   deleteConnection,
+  listComments,
+  createComment,
+  deleteComment,
   listResources,
   resolveResource,
 };

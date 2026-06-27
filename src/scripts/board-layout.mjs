@@ -29,6 +29,36 @@
 // "consistent layouts even with constraints" hold: the same board arranges the
 // same way every time, and unconstrained nodes align rather than scatter.
 
+// Sizing base for auto-sized notes — mirrors the CLI `add-note` defaults, which
+// is the "current width and height" auto-sizing scales up from.
+export const BASE_NOTE_W = 280;
+export const BASE_NOTE_H = 160;
+
+// Derive a readable note size from its text, used by the CLI auto layout so the
+// boards agents build don't cram a wall of text into a default box. Two
+// independent signals grow the box from the base size:
+//   • characters — every 250-char span beyond the first 250 (250–500, 500–750…)
+//     adds half the base height; every 500-char span beyond the first 500 adds
+//     half the base width. So 550 chars → 1.5× width, 2× height.
+//   • newlines — each newline adds a fifth of the base height (additive on top
+//     of the character-derived height).
+// The size is a pure function of the content, so re-running arrange is
+// idempotent — it never compounds the previous run's growth.
+export function autoSizeNote(content, baseW = BASE_NOTE_W, baseH = BASE_NOTE_H) {
+  const text = content || "";
+  const chars = text.length;
+  const newlines = (text.match(/\n/g) || []).length;
+
+  // "beyond the first N" → a span only counts once the content spills into it,
+  // so ceil(chars / span) - 1 spans have been entered past the base span.
+  const heightSpans = Math.max(0, Math.ceil(chars / 250) - 1);
+  const widthSpans = Math.max(0, Math.ceil(chars / 500) - 1);
+
+  const w = baseW * (1 + 0.5 * widthSpans);
+  const h = baseH * (1 + 0.5 * heightSpans) + baseH * 0.2 * newlines;
+  return { w: Math.round(w), h: Math.round(h) };
+}
+
 const PAD = 32; // breathing room inside a container, around its contents
 const GAP = 28; // minimum gap enforced between any two bodies
 const HEADER = 44; // space reserved under a section's label

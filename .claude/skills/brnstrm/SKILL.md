@@ -41,9 +41,17 @@ board id, its folder slug, or its display name.
 node bin/brnstrm.mjs list                          # id<TAB>name for every board
 node bin/brnstrm.mjs read "Implementing Skills"     # whole board → markdown
 node bin/brnstrm.mjs read my-board --section Skills  # just one section
+node bin/brnstrm.mjs comments my-board              # the human's comments on this board
 node bin/brnstrm.mjs resources my-board             # attached reference files
 node bin/brnstrm.mjs read-resource my-board spec.md  # print one reference file
 ```
+
+**Comments** are short remarks the human pins to a note or section (a circle
+badge in the app). They also appear inline under each note/section in `read`
+output, under a `## Comments` heading. Treat them as the human's feedback on the
+plan — read them when revising. Comments are **user-only**: there is no command
+to add or remove them, by design. Don't try to write them; surface what they say
+and act on it.
 
 ## Writing
 

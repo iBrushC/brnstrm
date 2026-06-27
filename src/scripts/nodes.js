@@ -515,6 +515,13 @@ export function createNodeLayer({
     return n ? { x: n.x, y: n.y, w: n.w, h: n.h } : null;
   }
 
+  // The DOM element for a node by id (used by the comment layer to anchor a
+  // comment badge inside the node so it tracks the node as it moves/zooms).
+  function getNodeEl(id) {
+    const n = nodes.find((n) => n.id === id);
+    return n ? n.el : null;
+  }
+
   return {
     load,
     clear,
@@ -526,6 +533,7 @@ export function createNodeLayer({
     getRects,
     getExportNodes,
     getNodeRect,
+    getNodeEl,
     selectInRect: sel.selectInRect,
     clearGroupSel: sel.clearGroup,
     captureGroupOrigins: sel.captureOrigins,

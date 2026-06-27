@@ -9,6 +9,7 @@ import { createConnectionLayer } from "./connections.js";
 import { createBoardBar } from "./boards.js";
 import { createHistory } from "./history.js";
 import { createRadialMenu } from "./radial.js";
+import { createCommentLayer } from "./comments.js";
 import { createExporter } from "./llm-export.js";
 import { arrangeBoard } from "./board-layout.mjs";
 import { toast } from "./toast.js";
@@ -63,6 +64,7 @@ const nodeLayerEl = document.getElementById("node-layer");
 let nodeLayer; // set during init
 let sections; // set during init
 let connections; // set during init
+let commentLayer; // set during init (comment badges + popovers)
 let exporter; // set during init (LLM export of board/section/note)
 
 // Single change hook shared by node/section edits: keep the minimap fresh and
@@ -203,6 +205,7 @@ async function reloadBoard(id) {
   nodeLayer.load(data.nodes);
   sections.load(data.sections);
   connections.load(data.connections);
+  if (commentLayer) commentLayer.load(data.comments);
   render();
 }
 
@@ -418,6 +421,7 @@ const boards = createBoardBar({
       nodeLayer.load(data.nodes);
       sections.load(data.sections);
       connections.load(data.connections);
+      if (commentLayer) commentLayer.load(data.comments);
       if (data.camera && typeof data.camera.x === "number") {
         view.x = data.camera.x;
         view.y = data.camera.y;
@@ -471,6 +475,12 @@ const radial = createRadialMenu({
       label: "Arrow",
       position: "right",
       onPick: () => connections && connections.beginConnect(),
+    },
+    {
+      id: "comment",
+      label: "Comment",
+      position: "bottom",
+      onPick: () => commentLayer && commentLayer.beginAttach(),
     },
   ],
 });
@@ -561,6 +571,15 @@ window.addEventListener("keydown", (e) => {
       radial.cancel();
       return;
     }
+    // Bail out of comment-attach mode or close an open comment popover.
+    if (commentLayer && commentLayer.isAttaching()) {
+      commentLayer.cancelAttach();
+      return;
+    }
+    if (commentLayer && commentLayer.isPopoverOpen()) {
+      commentLayer.closePopover();
+      return;
+    }
     // Bail out of an in-progress section draw or arrow connect.
     if (sections && sections.isDrawing()) {
       sections.cancelDraw();
@@ -599,7 +618,10 @@ nodeLayer = createNodeLayer({
   // In connect mode, a node press starts dragging an arrow instead of moving.
   isLocked: () => connections && connections.isConnecting(),
   onNodeClick: (node) => connections && connections.startDragFrom(node),
-  onDelete: (nodeId) => connections && connections.removeForNode(nodeId),
+  onDelete: (nodeId) => {
+    if (connections) connections.removeForNode(nodeId);
+    if (commentLayer) commentLayer.removeForTarget(nodeId);
+  },
   onExport: (node) => exporter && exporter.exportNote(node),
   onGroupDragStart: () => sections && sections.captureGroupOrigins(),
   onGroupDragMove: (dx, dy) => sections && sections.applyGroupOffset(dx, dy),
@@ -619,7 +641,10 @@ sections = createSectionLayer({
   onSectionDragMove: (dx, dy) => nodeLayer && nodeLayer.applyContainedOffset(dx, dy),
   onSectionDragEnd: () => nodeLayer && nodeLayer.commitContainedMove(),
   // Deleting a section drops the arrows that linked it (UI side; server prunes too).
-  onDelete: (sectionId) => connections && connections.removeForSection(sectionId),
+  onDelete: (sectionId) => {
+    if (connections) connections.removeForSection(sectionId);
+    if (commentLayer) commentLayer.removeForTarget(sectionId);
+  },
   onExport: (section) => exporter && exporter.exportSection(section),
 });
 
@@ -633,6 +658,18 @@ connections = createConnectionLayer({
   getSectionAt: (wx, wy) => sections.sectionAtWorld(wx, wy),
   onChange: drawMinimap,
   history,
+});
+
+/* ---------------- Comments ---------------- */
+// Comment badges live inside each node/section element (so they track geometry);
+// the layer resolves those elements through the node/section layers and uses the
+// section hit-test for the "Comment" wheel tool's attach gesture.
+commentLayer = createCommentLayer({
+  canvas,
+  getBoardId: () => boards.current(),
+  getNodeEl: (id) => nodeLayer.getNodeEl(id),
+  getSectionEl: (id) => sections.getSectionEl(id),
+  getSectionAt: (wx, wy) => sections.sectionAtWorld(wx, wy),
 });
 
 /* ---------------- LLM export ---------------- */

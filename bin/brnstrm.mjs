@@ -25,7 +25,7 @@ import {
   formatNote,
   nodeName,
 } from "../src/scripts/board-format.mjs";
-import { arrangeBoard } from "../src/scripts/board-layout.mjs";
+import { arrangeBoard, autoSizeNote } from "../src/scripts/board-layout.mjs";
 
 /* ---------------- tiny arg parser ---------------- */
 // Splits argv into positionals and --key value / --flag pairs. Values that look
@@ -216,6 +216,9 @@ const commands = {
       nodes: board.nodes,
       sections: board.sections,
       connections: board.connections,
+      // Comments ride along so an agent revising a plan sees the human's feedback
+      // inline under each note/section (read-only — agents never write comments).
+      comments: board.comments,
     };
     if (opts.section && opts.section !== true) {
       const sec = findSection(model, opts.section);
@@ -235,10 +238,59 @@ const commands = {
             `Disambiguate by id: ${byName.map((n) => n.id).join(", ")}\n`
         );
       }
-      process.stdout.write(formatNote(node));
+      process.stdout.write(formatNote(node, model.comments));
       return;
     }
     process.stdout.write(formatBoard(board.name, model));
+  },
+
+  // Read-only view of the user's comments. Agents can read comments (to revise
+  // plans) but never create them — there is deliberately no add/rm command.
+  comments({ positional, opts }) {
+    const id = boardIdOrFail(positional[0]);
+    const board = storage.getBoard(id);
+    let list = board.comments || [];
+    // Optional scope to one note/section (by id or name), mirroring `read`.
+    if (opts.note && opts.note !== true) {
+      const want = String(opts.note).toLowerCase();
+      const node =
+        board.nodes.find((n) => n.id === opts.note) ||
+        board.nodes.find((n) => (n.name || "").toLowerCase() === want);
+      if (!node) fail(`no note matches "${opts.note}"`);
+      list = list.filter((c) => c.targetId === node.id);
+    } else if (opts.section && opts.section !== true) {
+      const sec = findSection(
+        { nodes: board.nodes, sections: board.sections, connections: board.connections },
+        opts.section
+      );
+      if (!sec) fail(`no section matches "${opts.section}"`);
+      list = list.filter((c) => c.targetId === sec.id);
+    }
+    if (!list.length) {
+      process.stdout.write("(no comments on this board)\n");
+      return;
+    }
+    // Group by target, labelling each with its note/section name for context.
+    const nameById = new Map();
+    for (const n of board.nodes) nameById.set(n.id, nodeName(n));
+    for (const s of board.sections) nameById.set(s.id, (s.label || "").trim() || s.id);
+    const byTarget = new Map();
+    for (const c of list) {
+      const arr = byTarget.get(c.targetId) || [];
+      arr.push(c);
+      byTarget.set(c.targetId, arr);
+    }
+    for (const [targetId, arr] of byTarget) {
+      const kind = arr[0].targetKind === "section" ? "Section" : "Note";
+      process.stdout.write(`${kind}: ${nameById.get(targetId) || targetId} <!-- ${targetId} -->\n`);
+      for (const c of arr.slice().sort((a, b) => a.n - b.n)) {
+        const who = ((c.author || "").trim()) || "anonymous";
+        const when = c.created ? ` · ${c.created}` : "";
+        const text = (c.text || "").trim().replace(/\s*\n\s*/g, " ");
+        process.stdout.write(`  - ${who}${when}: ${text}\n`);
+      }
+      process.stdout.write("\n");
+    }
   },
 
   list() {
@@ -420,10 +472,22 @@ const commands = {
       out({ ok: true, board: id, moved: 0 });
       return;
     }
-    const next = arrangeBoard(model);
-    const nodeById = new Map(model.nodes.map((n) => [n.id, n]));
+    // Snapshot the original geometry before auto-sizing so we can tell which
+    // notes actually changed (the resize below mutates model.nodes in place).
+    const nodeById = new Map(model.nodes.map((n) => [n.id, { ...n }]));
     const secById = new Map(model.sections.map((s) => [s.id, s]));
     let moved = 0;
+
+    // Auto-size every note from its content before laying out, so the arranger
+    // packs boxes at their readable sizes and sections wrap them correctly.
+    // CLI-only — the in-app auto-arrange leaves note sizes untouched.
+    for (const n of model.nodes) {
+      const size = autoSizeNote(n.content);
+      n.w = size.w;
+      n.h = size.h;
+    }
+
+    const next = arrangeBoard(model);
 
     // Sections first (larger first) so a note never momentarily lands outside the
     // section it belongs to during the per-update folder reconcile.
@@ -443,8 +507,8 @@ const commands = {
     const nodePatches = [];
     for (const n of next.nodes) {
       const cur = nodeById.get(n.id);
-      if (cur && (cur.x !== n.x || cur.y !== n.y)) {
-        nodePatches.push({ id: n.id, x: n.x, y: n.y });
+      if (cur && (cur.x !== n.x || cur.y !== n.y || cur.w !== n.w || cur.h !== n.h)) {
+        nodePatches.push({ id: n.id, x: n.x, y: n.y, w: n.w, h: n.h });
         moved++;
       }
     }
@@ -505,6 +569,7 @@ const HELP = `brnstrm — agent CLI for reading and writing brainstorm boards
 Reading
   list                                  list every board (id<TAB>name)
   read <board> [--section S|--note N]    board (or one section/note) as markdown
+  comments <board> [--section S|--note N] user comments (read-only; agents can't add)
   resources <board>                     list reference files on a board
   read-resource <board> <name>          print a reference file
 

@@ -444,6 +444,13 @@ export function createSectionLayer({ layer, canvas, getBoardId, onChange, histor
     return s ? { x: s.x, y: s.y, w: s.w, h: s.h } : null;
   }
 
+  // The DOM element for a section by id (the comment layer anchors a comment
+  // badge inside it so the badge tracks the section as it moves/zooms).
+  function getSectionEl(id) {
+    const s = sections.find((x) => x.id === id);
+    return s ? s.el : null;
+  }
+
   // The innermost section containing a world point — smallest area wins, so a
   // nested section beats its parent. Returns { id, el } (for arrow hit-testing)
   // or null. Used by the unified arrow tool to pick a section endpoint.
@@ -466,6 +473,7 @@ export function createSectionLayer({ layer, canvas, getBoardId, onChange, histor
     getRects,
     getExportSections,
     getSectionRect,
+    getSectionEl,
     sectionAtWorld,
     isDrawing: () => drawing,
     selectInRect: sel.selectInRect,

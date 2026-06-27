@@ -98,19 +98,49 @@ function makeNameOf(nodes, sections) {
 /* ---------------- markdown rendering ---------------- */
 const hashes = (level) => "#".repeat(Math.max(1, level));
 
+// User comments pinned to a note/section, surfaced so an agent revising a plan
+// sees the human's feedback in context. Indexed by target id; nothing is emitted
+// when a target has no comments (the common case, and the in-app export, which
+// passes no comments at all).
+function commentIndex(comments) {
+  const map = new Map();
+  for (const c of comments || []) {
+    const arr = map.get(c.targetId) || [];
+    arr.push(c);
+    map.set(c.targetId, arr);
+  }
+  for (const arr of map.values()) arr.sort((a, b) => (a.n || 0) - (b.n || 0));
+  return map;
+}
+
+function renderComments(id, level, lines, byTarget) {
+  const list = byTarget && byTarget.get(id);
+  if (!list || !list.length) return;
+  lines.push(`${hashes(level)} Comments`, "");
+  for (const c of list) {
+    const who = ((c.author || "").trim()) || "anonymous";
+    const when = c.created ? ` · ${c.created}` : "";
+    const text = (c.text || "").trim().replace(/\s*\n\s*/g, " ");
+    lines.push(`- **${who}**${when}: ${text}`);
+  }
+  lines.push("");
+}
+
 // Stable ids ride along in an HTML comment: invisible in rendered markdown (so a
 // human's pasted export stays clean) but machine-readable, so an agent can tell
 // two same-named notes apart and address the right one on write-back.
-function renderNote(n, level, lines) {
+function renderNote(n, level, lines, byTarget) {
   lines.push(`${hashes(level)} Note: ${nodeName(n)} <!-- ${n.id} -->`, "");
   const body = (n.content || "").trim();
   if (body) lines.push(body, "");
+  renderComments(n.id, level + 1, lines, byTarget);
 }
 
-function renderSection(s, level, lines) {
+function renderSection(s, level, lines, byTarget) {
   lines.push(`${hashes(level)} Section: ${sectionName(s)} <!-- ${s.id} -->`, "");
-  for (const n of s.childNodes.slice().sort(byPos)) renderNote(n, level + 1, lines);
-  for (const cs of s.childSections.slice().sort(byPos)) renderSection(cs, level + 1, lines);
+  renderComments(s.id, level + 1, lines, byTarget);
+  for (const n of s.childNodes.slice().sort(byPos)) renderNote(n, level + 1, lines, byTarget);
+  for (const cs of s.childSections.slice().sort(byPos)) renderSection(cs, level + 1, lines, byTarget);
 }
 
 function renderRelationships(connections, includeId, nameOf, level, lines) {
@@ -147,12 +177,13 @@ export const PREAMBLE_SECTION =
   "Nested sections group related notes, and arrows describe relationships between them. " +
   "Treat it as a specification of ideas to implement.";
 
-export function formatBoard(boardName, { nodes, sections, connections }) {
+export function formatBoard(boardName, { nodes, sections, connections, comments }) {
   const nameOf = makeNameOf(nodes, sections);
+  const byTarget = commentIndex(comments);
   const { rootSections, rootNodes } = buildForest(nodes, sections);
   const lines = [PREAMBLE_BOARD, "", "# Board: " + (boardName || "Untitled board"), ""];
-  for (const n of rootNodes.slice().sort(byPos)) renderNote(n, 2, lines);
-  for (const s of rootSections.slice().sort(byPos)) renderSection(s, 2, lines);
+  for (const n of rootNodes.slice().sort(byPos)) renderNote(n, 2, lines, byTarget);
+  for (const s of rootSections.slice().sort(byPos)) renderSection(s, 2, lines, byTarget);
   const allIds = new Set([
     ...nodes.map((n) => n.id),
     ...sections.map((s) => s.id),
@@ -161,24 +192,29 @@ export function formatBoard(boardName, { nodes, sections, connections }) {
   return tidy(lines);
 }
 
-export function formatSection(sectionId, { nodes, sections, connections }) {
+export function formatSection(sectionId, { nodes, sections, connections, comments }) {
   const nameOf = makeNameOf(nodes, sections);
+  const byTarget = commentIndex(comments);
   const { secs } = buildForest(nodes, sections);
   const target = secs.find((s) => s.id === sectionId);
   if (!target) return "";
   const ids = collectIds(target);
   const lines = [PREAMBLE_SECTION, ""];
-  renderSection(target, 1, lines);
+  renderSection(target, 1, lines, byTarget);
   renderRelationships(connections, (id) => ids.has(id), nameOf, 2, lines);
   return tidy(lines);
 }
 
 // A note is, per spec, basically just its content. Keep the name as a heading
-// when there is one (it's useful framing); otherwise emit the bare content.
-export function formatNote(node) {
+// when there is one (it's useful framing); otherwise emit the bare content. Any
+// comments on the note are appended so an agent reading one note sees its feedback.
+export function formatNote(node, comments) {
   const body = (node.content || "").trim();
   const nm = (node.name || "").trim();
-  if (nm && body) return `# ${nm}\n\n${body}\n`;
-  if (body) return body + "\n";
-  return `# ${nm || node.id}\n`;
+  const lines = [];
+  if (nm && body) lines.push(`# ${nm}`, "", body, "");
+  else if (body) lines.push(body, "");
+  else lines.push(`# ${nm || node.id}`, "");
+  renderComments(node.id, 2, lines, commentIndex(comments));
+  return tidy(lines);
 }

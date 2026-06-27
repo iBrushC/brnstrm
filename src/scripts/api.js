@@ -80,4 +80,15 @@ export const api = {
     req("PATCH", board(id) + "/connections/" + encodeURIComponent(connId), patch),
   deleteConnection: (id, connId) =>
     req("DELETE", board(id) + "/connections/" + encodeURIComponent(connId)),
+
+  // Comments — user remarks pinned to a note or section. `text` is the remark;
+  // the server stamps the git author + time and assigns the incrementing index n.
+  listComments: (id) => req("GET", board(id) + "/comments"),
+  createComment: (id, targetId, text) =>
+    req("POST", board(id) + "/comments", { targetId, text }),
+  deleteComment: (id, targetId, n) =>
+    req(
+      "DELETE",
+      board(id) + "/comments/" + encodeURIComponent(targetId) + "/" + encodeURIComponent(n)
+    ),
 };
