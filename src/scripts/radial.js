@@ -5,7 +5,7 @@
 // empty quarter) cancels. Built to grow: pass one option per quarter and each
 // lights up its wedge the same way; only the filled quarters are pickable.
 
-const RADIUS = 92; // px — menu outer radius
+const RADIUS = 125; // px — menu outer radius
 const DEAD_ZONE = 26; // px — center radius that cancels on release
 
 // Quarter centered on each compass position (screen angles, y-down, 0° = right).

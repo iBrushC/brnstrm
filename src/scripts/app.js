@@ -460,25 +460,25 @@ const radial = createRadialMenu({
   options: [
     {
       id: "note",
-      label: "Note",
+      label: "Note (q)",
       position: "top",
       onPick: (p) => nodeLayer && nodeLayer.spawnAtWorld(p.x, p.y),
     },
     {
       id: "section",
-      label: "Section",
+      label: "Section (r)",
       position: "left",
       onPick: () => sections && sections.beginDraw(),
     },
     {
       id: "arrow",
-      label: "Arrow",
+      label: "Arrow (w)",
       position: "right",
       onPick: () => connections && connections.beginConnect(),
     },
     {
       id: "comment",
-      label: "Comment",
+      label: "Comment (e)",
       position: "bottom",
       onPick: () => commentLayer && commentLayer.beginAttach(),
     },
@@ -517,6 +517,18 @@ window.addEventListener("keydown", (e) => {
   ) {
     radial.show(lastMouse.x, lastMouse.y, screenToWorld(lastMouse.x, lastMouse.y));
     return;
+  }
+
+  // Quick-create shortcuts: q=note, w=arrow, e=comment, r=section.
+  if (!e.repeat && !isTyping() && !e.metaKey && !e.ctrlKey && nodeLayer && !radial.isOpen()) {
+    if (e.key === "q") {
+      const w = screenToWorld(lastMouse.x, lastMouse.y);
+      nodeLayer.spawnAtWorld(w.x, w.y);
+      return;
+    }
+    if (e.key === "w" && connections) { connections.beginConnect(); return; }
+    if (e.key === "e" && commentLayer) { commentLayer.beginAttach(); return; }
+    if (e.key === "r" && sections) { sections.beginDraw(); return; }
   }
 
   // Undo (Ctrl/Cmd+Z) — reverses the last recorded action: delete, move,
