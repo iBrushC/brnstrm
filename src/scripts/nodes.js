@@ -423,8 +423,56 @@ export function createNodeLayer({
     onChange();
   }
 
-  // Delete the selected node, if any. Returns whether something was deleted.
+  // Delete a whole set of nodes as one undoable action — used for marquee-group
+  // deletion so a single Ctrl+Z brings the lot back, selected as a group again.
+  function deleteNodes(list) {
+    const boardId = getBoardId();
+    const snapshots = list.map((node) => ({
+      id: node.id,
+      name: node.name,
+      x: node.x,
+      y: node.y,
+      w: node.w,
+      h: node.h,
+      content: node.content,
+    }));
+    for (const node of list) {
+      removeNode(node);
+      if (boardId) api.deleteNode(boardId, node.id).catch((err) => console.error(err));
+    }
+
+    if (history) {
+      history.push({
+        label: list.length === 1 ? "delete node" : "delete " + list.length + " notes",
+        undo: async () => {
+          const bid = getBoardId();
+          if (!bid) return;
+          const restored = [];
+          for (const snap of snapshots) {
+            try {
+              restored.push(addNodeEl(await api.createNode(bid, snap)));
+            } catch (err) {
+              console.error(err);
+            }
+          }
+          if (restored.length === 1) select(restored[0]);
+          else if (restored.length > 1) sel.setGroup(restored);
+          onChange();
+        },
+      });
+    }
+    onChange();
+  }
+
+  // Delete the current selection. Prefers the marquee group if there is one,
+  // else the single selection. Returns whether anything was deleted.
   function deleteSelected() {
+    const group = sel.getGroup();
+    if (group.length) {
+      deleteNodes(group.slice());
+      sel.clearGroup();
+      return true;
+    }
     const selected = sel.getSelected();
     if (!selected) return false;
     deleteNode(selected);

@@ -472,22 +472,19 @@ const commands = {
       out({ ok: true, board: id, moved: 0 });
       return;
     }
-    // Snapshot the original geometry before auto-sizing so we can tell which
-    // notes actually changed (the resize below mutates model.nodes in place).
+    // Snapshot the original geometry so we can tell which notes actually changed
+    // (arrangeBoard auto-sizes notes internally, returning their new w/h).
     const nodeById = new Map(model.nodes.map((n) => [n.id, { ...n }]));
     const secById = new Map(model.sections.map((s) => [s.id, s]));
     let moved = 0;
 
     // Auto-size every note from its content before laying out, so the arranger
-    // packs boxes at their readable sizes and sections wrap them correctly.
-    // CLI-only — the in-app auto-arrange leaves note sizes untouched.
-    for (const n of model.nodes) {
-      const size = autoSizeNote(n.content);
-      n.w = size.w;
-      n.h = size.h;
-    }
-
-    const next = arrangeBoard(model);
+    // packs boxes at their readable sizes and sections wrap them correctly. The
+    // sizing runs *inside* arrangeBoard, after it has figured out which section
+    // each note belongs to, so a grown note stays inside its section instead of
+    // spilling out and being arranged as a loose node. CLI-only — the in-app
+    // auto-arrange leaves note sizes untouched.
+    const next = arrangeBoard(model, { sizeNote: (content) => autoSizeNote(content) });
 
     // Sections first (larger first) so a note never momentarily lands outside the
     // section it belongs to during the per-update folder reconcile.

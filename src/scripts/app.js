@@ -315,7 +315,9 @@ canvas.addEventListener("mousedown", (e) => {
   }
 
   if (e.shiftKey) {
-    // Shift + drag = marquee box selection
+    // Shift + drag = marquee box selection. preventDefault stops the browser from
+    // kicking off a native text selection across the page during the drag.
+    e.preventDefault();
     const r = canvas.getBoundingClientRect();
     const startWorld = screenToWorld(e.clientX - r.left, e.clientY - r.top);
     const previewEl = document.createElement("div");
@@ -562,15 +564,15 @@ window.addEventListener("keydown", (e) => {
     return;
   }
 
-  // Delete the selected thing — try node, then section, then arrow.
+  // Delete the current selection. A marquee group can span both layers, so delete
+  // from nodes AND sections (don't short-circuit between them); only fall back to
+  // the selected arrow when neither layer had anything selected.
   if ((e.key === "Delete" || e.key === "Backspace") && !isTyping() && nodeLayer) {
-    if (
-      nodeLayer.deleteSelected() ||
-      (sections && sections.deleteSelected()) ||
-      (connections && connections.deleteSelected())
-    ) {
-      e.preventDefault();
-    }
+    let deleted = false;
+    if (nodeLayer.deleteSelected()) deleted = true;
+    if (sections && sections.deleteSelected()) deleted = true;
+    if (!deleted && connections && connections.deleteSelected()) deleted = true;
+    if (deleted) e.preventDefault();
     return;
   }
 

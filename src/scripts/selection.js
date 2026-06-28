@@ -31,6 +31,12 @@ export function createSelection({ getItems, place, persist, onChange }) {
   }
 
   function selectInRect(rect) {
+    // A marquee supersedes any single selection, so the two never linger together
+    // (which would leave the single selection behind on a group delete).
+    if (selected) {
+      selected.el.classList.remove("selected");
+      selected = null;
+    }
     clearGroup();
     group = getItems().filter((it) =>
       it.x < rect.x + rect.w &&

@@ -329,7 +329,56 @@ export function createSectionLayer({ layer, canvas, getBoardId, onChange, histor
     notify();
   }
 
+  // Delete a whole set of sections as one undoable action — used for marquee-group
+  // deletion so a single Ctrl+Z brings the lot back, selected as a group again.
+  function deleteSections(list) {
+    const boardId = getBoardId();
+    const snapshots = list.map((section) => ({
+      id: section.id,
+      x: section.x,
+      y: section.y,
+      w: section.w,
+      h: section.h,
+      label: section.label,
+    }));
+    for (const section of list) {
+      removeSection(section);
+      if (onDelete) onDelete(section.id); // drop any arrows that linked this section
+      if (boardId) api.deleteSection(boardId, section.id).catch((err) => console.error(err));
+    }
+
+    if (history) {
+      history.push({
+        label: list.length === 1 ? "delete section" : "delete " + list.length + " sections",
+        undo: async () => {
+          const bid = getBoardId();
+          if (!bid) return;
+          const restored = [];
+          for (const snap of snapshots) {
+            try {
+              restored.push(addSectionEl(await api.createSection(bid, snap)));
+            } catch (err) {
+              console.error(err);
+            }
+          }
+          if (restored.length === 1) select(restored[0]);
+          else if (restored.length > 1) sel.setGroup(restored);
+          notify();
+        },
+      });
+    }
+    notify();
+  }
+
+  // Delete the current selection. Prefers the marquee group if there is one,
+  // else the single selection. Returns whether anything was deleted.
   function deleteSelected() {
+    const group = sel.getGroup();
+    if (group.length) {
+      deleteSections(group.slice());
+      sel.clearGroup();
+      return true;
+    }
     const selected = sel.getSelected();
     if (!selected) return false;
     deleteSection(selected);

@@ -232,6 +232,8 @@ body {
 #canvas.box-selecting,
 #canvas.box-selecting * {
   cursor: crosshair;
+  /* Suppress native text selection while dragging a marquee. */
+  user-select: none;
 }
 
 /* Marquee selection overlay */

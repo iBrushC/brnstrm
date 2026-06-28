@@ -498,7 +498,13 @@ function postOrderSections(roots, childMap) {
 // storage layer / export getters). Returns NEW geometry — { nodes:[{id,x,y,w,h}],
 // sections:[{id,x,y,w,h}] } — without mutating the input; the caller persists the
 // items whose geometry actually changed.
-export function arrangeBoard(model) {
+//
+// `opts.sizeNote(content, node) -> {w,h} | null` (optional) auto-sizes each note
+// from its content before layout — used by the CLI `arrange` so agent-generated
+// boards don't cram a wall of text into a default box. It is applied *after*
+// section membership is computed (see below), so a note that grows to fit its
+// text never spills out of its section; the section is re-sized to wrap it.
+export function arrangeBoard(model, opts = {}) {
   const nodes = (model.nodes || []).map((n) => ({ ...n }));
   const sections = (model.sections || []).map((s) => ({ ...s }));
   const connections = model.connections || [];
@@ -508,6 +514,8 @@ export function arrangeBoard(model) {
 
   // Immediate parent of each note (smallest containing section) and section
   // (smallest strictly-containing section), mirroring the storage containment rule.
+  // Computed from the *original* geometry — before any auto-sizing — so growing a
+  // note to fit its text can't bump it out of the section it belongs to.
   const parentOfNote = new Map();
   for (const n of nodes) {
     let best = null;
@@ -522,6 +530,16 @@ export function arrangeBoard(model) {
     parentOfSection.set(s.id, best ? best.id : null);
   }
   const parentOf = (id) => (nById.has(id) ? parentOfNote.get(id) : parentOfSection.get(id));
+
+  // Now that membership is fixed, auto-size notes from their content if asked.
+  // Sizing after membership keeps every note inside its section: Phase A lays the
+  // (possibly larger) note out within its parent and grows the section to wrap it.
+  if (typeof opts.sizeNote === "function") {
+    for (const n of nodes) {
+      const size = opts.sizeNote(n.content, n);
+      if (size) { n.w = size.w; n.h = size.h; }
+    }
+  }
 
   const childSectionsOf = new Map(sections.map((s) => [s.id, []]));
   const rootSections = [];
